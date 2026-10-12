@@ -15,7 +15,7 @@ namespace WhatsAHealthBar;
 
 /// <summary>
 /// Animated health bars over monsters and players, built to cost the same with 1 or 500 on screen.
-/// - Tracking: EntityAdded/EntityRemoved keep a flat list; components are looked up once and held.
+/// - Tracking: EntityAdded/EntityRemoved keep a flat list; components are looked up again at the classify rate (a boss phase change swaps them).
 /// - Classify (10 Hz by default): kind, hostility, distance (grid, squared) and model height. Out-of-range or hidden monsters
 ///   cost nothing per frame after that.
 /// - Every frame, wanted bars only: one Render.Pos read, one camera-snapshot projection, off-screen cull, then life and ES.
@@ -188,8 +188,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 if (b.Seen && !b.Dying) Die(b, publish);
                 continue;
             }
-            b.LifeComp ??= e.GetComponent<Life>();
-            b.Render ??= e.GetComponent<Render>();
+            // Looked up again every pass, not held for good: a boss phase change (immune, adds, comes back) gives the same
+            // entity new Life and Render components, and the old ones read 0/1 HP forever (a fake kill, the bar never back).
+            b.LifeComp = e.GetComponent<Life>();
+            b.Render = e.GetComponent<Render>();
             if (b.LifeComp == null || b.Render == null || e.IsHidden) continue;
             var life = b.LifeComp;
             if (b.Dying)

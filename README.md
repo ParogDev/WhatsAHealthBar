@@ -15,7 +15,7 @@ Crisp, animated health bars for the Path of Exile 2 HUD (ExileCore2), built to c
 ## Why it is cheap
 | | Stock HealthBars | Whats A Health Bar |
 |---|---|---|
-| Components | `GetComponent<Life>()` on every access | looked up once per entity, held |
+| Components | `GetComponent<Life>()` on every access | looked up at the classify rate (10 Hz), held between passes |
 | Position | `Entity.Pos` + `GetComponent<Render>` per frame | `Render.Pos` read once per frame, height cached at classify rate |
 | Projection | `Camera.WorldToScreen` per bar | one `Camera.Snapshot` per frame |
 | Distance | `DistancePlayer` (200 ms cache per entity) | squared grid distance at the classify rate (10 Hz) |
