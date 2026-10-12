@@ -15,6 +15,8 @@ public sealed class HealthBarStateDto
     public HealthBarTimingsDto Timings { get; set; } = new();
     public HealthBarPreviewDto Preview { get; set; } = new();
     public HealthBarBridgeDto Bridge { get; set; } = new();
+    /// <summary>A pool read that couldn't be real in the last 30 s (which pool, what was read, on which entity), or null.</summary>
+    public string? PoolProblem { get; set; }
     /// <summary>The last kills published (newest first, up to 10).</summary>
     public List<HealthBarKillDto> Kills { get; set; } = new();
 }

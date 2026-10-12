@@ -44,7 +44,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private float _dt, _resolutionScale = 1;
     private Vector2 _window = new(2560, 1440);
     private bool _panelsOpen, _inTown, _inHideout, _active;
-    private string? _suppressed = "not in game", _area, _previewFocus;
+    private string? _suppressed = "not in game", _area, _previewFocus, _poolProblem;
+    private double _poolProblemAt;
     private int _peakDrawn, _wanted;
 
     // Own timings (microseconds): moving averages, and maxima over a 5 s window.
@@ -196,12 +197,16 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 b.Published = false;
                 b.FirstHitAt = 0;
             }
-            // Which pools exist (max values, at the classify rate): the frame loop reads ES and ward only when present.
+            // Which pools to read per frame (classify rate): any with a max OR a current value, so a pool granted without a
+            // max of its own still shows. The rest cost nothing per frame.
             var pools = _renderer.WantsPools;
-            b.Max[Bar.Es] = pools ? life.MaxES : 0;
-            b.Max[Bar.Ward] = pools ? life.Ward.Max : 0;
-            if (b.Max[Bar.Es] == 0) b.Cur[Bar.Es] = 0;
-            if (b.Max[Bar.Ward] == 0) b.Cur[Bar.Ward] = 0;
+            for (var p = Bar.Es; p <= Bar.Ward; p++)
+            {
+                var v = !pools ? default : p == Bar.Es ? life.EnergyShield : life.Ward;
+                var track = pools && (v.Max > 0 || v.Current > 0);
+                if (!track && b.Tracked[p]) b.ClearPool(p);
+                b.Tracked[p] = track;
+            }
 
             b.Kind = e.Type == EntityType.Player
                 ? e.Address == playerAddr ? BarKind.Self : BarKind.Player
@@ -251,11 +256,21 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
             if (!b.Dying && b.LifeComp != null)
             {
+                // One struct read per pool: current and max from the same moment (separate CurHP/MaxHP reads could straddle
+                // a buff and show a fake overfull). The full mark is the unreserved max (reserved life or ES can't be filled).
                 var life = b.LifeComp;
-                b.Cur[Bar.Life] = life.CurHP;
-                b.Max[Bar.Life] = life.MaxHP;
-                if (b.Max[Bar.Es] > 0) b.Cur[Bar.Es] = life.CurES;
-                if (b.Max[Bar.Ward] > 0) b.Cur[Bar.Ward] = life.Ward.Current;
+                var hv = life.Health;
+                if (!b.SetPool(Bar.Life, hv.Current, hv.Unreserved)) { BadPool(b, "life", hv.Current, hv.Max); continue; }
+                if (b.Tracked[Bar.Es])
+                {
+                    var ev = life.EnergyShield;
+                    if (!b.SetPool(Bar.Es, ev.Current, ev.Unreserved)) { BadPool(b, "energy shield", ev.Current, ev.Max); b.ClearPool(Bar.Es); }
+                }
+                if (b.Tracked[Bar.Ward])
+                {
+                    var wv = life.Ward;
+                    if (!b.SetPool(Bar.Ward, wv.Current, wv.Max)) { BadPool(b, "ward", wv.Current, wv.Max); b.ClearPool(Bar.Ward); }
+                }
                 if (b.MaxTotal <= 0) continue;
                 b.TrackHit(_now);
                 if (b.MaxHp > 0 && b.Hp <= 0 && b.Seen) Die(b, Settings.Bridge.PublishKills.Value);
@@ -266,6 +281,17 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             _byKind[(int)b.Kind]++;
         }
         if (_drawList.Count > _peakDrawn) _peakDrawn = _drawList.Count;
+    }
+
+    /// <summary>
+    /// A pool read that can't be real (negative, or over 100M): the Life component's layout probably moved with a game patch.
+    /// The pool is dropped for this bar and the state says which pool and what was read, instead of drawing garbage.
+    /// </summary>
+    private void BadPool(Bar b, string pool, int cur, int max)
+    {
+        _poolProblem = $"{pool} read {cur}/{max} on {b.Entity?.Path ?? "a preview bar"}: implausible, the pool is not drawn " +
+                       "(Life component layout moved with a patch?)";
+        _poolProblemAt = _now;
     }
 
     private AnimParams Anim()
@@ -280,7 +306,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         b.Dying = true;
         b.Wanted = false;
-        var (maxEs, maxWard) = (b.Max[Bar.Es], b.Max[Bar.Ward]);
+        var (maxEs, maxWard) = (b.BaseMax[Bar.Es], b.BaseMax[Bar.Ward]);
         b.Zero();
         if (b.Published || b.Entity == null) return;
         var publishIt = publish switch
@@ -471,6 +497,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 Focus = _previewFocus,
             },
             Bridge = new HealthBarBridgeDto { Linked = _link.Available, Why = _link.Why, PublishKills = Settings.Bridge.PublishKills.Value },
+            PoolProblem = _now - _poolProblemAt < 30 ? _poolProblem : null,
         };
         lock (_kills) state.Kills = _kills.ToList();
         return JsonConvert.SerializeObject(state);

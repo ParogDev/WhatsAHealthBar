@@ -143,31 +143,41 @@ public sealed class BarRenderer
             life = Lerp(life, 0xFFFFFFFF, k);
         }
 
+
+        // Overfull spills past the bar's right end (outside the outline); the percent text moves past the longest spill.
+        var spillX = x1 + _outlineW;
+        var spillMax = 0f;
+
         // Life's region (for the culling marker): the whole bar unless side by side.
         float lifeX0 = x0, lifeX1 = x1;
         if (SideBySide)
         {
-            // Each pool owns a region sized by its max share, in damage order: life, ES, ward.
-            var px = w / b.MaxTotal;
+            // Each pool owns a region of the width by its (animated) share of the combined max, in damage order: life, ES, ward.
+            var shareSum = b.Share[0] + b.Share[1] + b.Share[2];
             var cursor = x0;
             var first = true;
             for (var p = 0; p < Bar.PoolCount; p++)
             {
-                if (b.Max[p] <= 0) continue;
+                if (b.Share[p] <= 0.001f || shareSum <= 0) continue;
                 var rx0 = MathF.Round(cursor);
-                cursor += b.Max[p] * px;
+                cursor += w * b.Share[p] / shareSum;
                 var rx1 = MathF.Round(cursor);
                 if (rx1 >= x1 - 0.5f) rx1 = x1;
+                if (rx1 <= rx0) continue;
                 if (p == Bar.Life) { lifeX0 = rx0; lifeX1 = rx1; }
-                Pool(b, p, rx0, rx1, y0, y1, p == Bar.Life ? life : p == Bar.Es ? es : ward, a, r, rx0 <= x0, rx1 >= x1);
+                var col = PoolColor(p, life, es, ward);
+                Pool(b, p, rx0, rx1, y0, y1, col, a, r, rx0 <= x0, rx1 >= x1);
                 if (!first && _dividers) Rect(rx0, y0, rx0 + 1, y1, Mul(0xFF000000, a * 0.85f));
+                if (b.Veil[p] > 0.002f && !b.Temp[p])
+                    spillMax = MathF.Max(spillMax, Spill(spillX, y0, y1, w, col, a, b.Veil[p]));
                 first = false;
             }
         }
         else if (Sandwich)
         {
-            // Layers top to bottom in damage order (ward, ES, life); their thicknesses are the pools' shares of the combined
-            // max, so together they always fill the bar's whole height. Each layer fills left to right by its own cur/max.
+            // Layers top to bottom in damage order (ward, ES, life); their thicknesses are the pools' (animated) shares of
+            // the combined max, so together they always fill the bar's whole height. Each layer fills left to right by its
+            // own cur/max; an overfull layer spills past the end on its own row.
             var layers = Layers(b, (int)h);
             var ly = y0;
             int top = -1, bottom = -1;
@@ -177,11 +187,18 @@ public sealed class BarRenderer
             {
                 if (layers[p] <= 0) continue;
                 var ly1 = ly + layers[p];
-                Layer(b, p, x0, x1, ly, ly1, p == Bar.Life ? life : p == Bar.Es ? es : ward, a, r > 0, p == top, p == bottom);
+                var col = PoolColor(p, life, es, ward);
+                Layer(b, p, x0, x1, ly, ly1, col, a, r > 0, p == top, p == bottom);
+                if (b.Veil[p] > 0.002f && !b.Temp[p])
+                    spillMax = MathF.Max(spillMax, Spill(spillX, ly, ly1, w, col, a, b.Veil[p]));
                 ly = ly1;
             }
         }
-        else Pool(b, Bar.Life, x0, x1, y0, y1, life, a, r, true, true);
+        else
+        {
+            Pool(b, Bar.Life, x0, x1, y0, y1, life, a, r, true, true);
+            if (b.Veil[Bar.Life] > 0.002f) spillMax = Spill(spillX, y0, y1, w, life, a, b.Veil[Bar.Life]);
+        }
 
         // Shading and gloss over the whole bar (a glass tube): dark from mid to bottom, white from top to mid.
         var inset = r > 0 ? 1 : 0;
@@ -208,13 +225,16 @@ public sealed class BarRenderer
             Rect(x, y0 - 1, x + 1, y1 + 1, Mul(0xFFFFFFFF, a * 0.9f));
         }
 
-        // The sum: life + ES + ward over their maxima, as a thin line under the bar.
+        // The sum: all pools against their normal maxima, as a thin line under the bar; past 100% (overfull or a granted
+        // pool) the line is full and the excess spills like the pools do.
         var below = y1 + _outlineW;
-        if (_totalOn && b.Kind <= _totalUpTo && (b.Max[Bar.Es] > 0 || b.Max[Bar.Ward] > 0))
+        var total = b.TotalFraction;
+        if (_totalOn && b.Kind <= _totalUpTo && (b.Max[Bar.Es] > 0 || b.Max[Bar.Ward] > 0 || total > 1.001f))
         {
             var th = MathF.Max(2, MathF.Round(2 * _scale));
             Rect(x0, below + 1, x1, below + 1 + th, Mul(_bg, a));
-            Rect(x0, below + 1, MathF.Round(x0 + w * b.TotalFraction), below + 1 + th, Mul(_text, a * 0.9f));
+            Rect(x0, below + 1, MathF.Round(x0 + w * MathF.Min(1, total)), below + 1 + th, Mul(_text, a * 0.9f));
+            if (total > 1.001f) Spill(spillX, below + 1, below + 1 + th, w, _text, a, total - 1);
         }
 
         if (st.ShowPercent || label != null)
@@ -222,13 +242,31 @@ public sealed class BarRenderer
             var ty = MathF.Round(y0 + (h - _fontSize) * 0.5f);
             if (st.ShowPercent)
             {
-                var pct = Percent[(int)MathF.Ceiling(b.TotalFraction * 100)];
-                var tp = new Vector2(x1 + 4 + _outlineW, ty);
+                var pct = Percent[Math.Clamp((int)MathF.Ceiling(total * 100), 0, Percent.Length - 1)];
+                var tp = new Vector2(spillX + spillMax + 4, ty);
                 Text(tp + Vector2.One, Mul(0xFF000000, a * 0.8f), pct);
                 Text(tp, Mul(_text, a), pct);
             }
             if (label != null) Text(new Vector2(MathF.Round(x0 - LabelWidth(label) - 8 - _outlineW), ty), Mul(_text, a), label);
         }
+    }
+
+    private static uint PoolColor(int p, uint life, uint es, uint ward) => p == Bar.Life ? life : p == Bar.Es ? es : ward;
+
+    /// <summary>How opaque an overfull veil or a granted pool is: faint for a little, bolder as more is added.</summary>
+    private static float VeilAlpha(float over) => 0.22f + 0.53f * MathF.Min(1, over);
+
+    /// <summary>
+    /// The overfull part of a pool, outside the bar's right end on that pool's row: as long as 6% of the bar for a sliver
+    /// up to 30% at double, and from faint to bold, so 5% over and 300% over don't look alike. Returns its length.
+    /// </summary>
+    private float Spill(float x, float sy0, float sy1, float w, uint col, float a, float over)
+    {
+        var len = MathF.Max(2, MathF.Round(w * (0.06f + 0.24f * MathF.Min(1, over))));
+        var c = Mul(col, a * VeilAlpha(over));
+        // Fades out toward its tip so it reads as overflow, not as more bar.
+        Grad4(x, sy0, x + len, sy1, c, Mul(c, 0.25f), Mul(c, 0.25f), c);
+        return len;
     }
 
     /// <summary>One pool in its region: trail chip, fill, regen glow, hit flash, from that pool's own animation.</summary>
@@ -240,7 +278,9 @@ public sealed class BarRenderer
         if (xt > xf) Round(xf, ry0, xt, ry1, Mul(_trail, a), r, roundLeft && xf <= rx0, roundRight && xt >= rx1);
         if (xf <= rx0) return;
         var right = roundRight && xf >= rx1;
-        Round(rx0, ry0, xf, ry1, Mul(col, a), r, roundLeft, right);
+        // A granted pool (no max of its own) is a veil: translucent, bolder the bigger it is next to the other pools.
+        var fill = b.Temp[p] ? a * VeilAlpha(b.Veil[p]) : a;
+        Round(rx0, ry0, xf, ry1, Mul(col, fill), r, roundLeft, right);
         if (b.Glow[p] > 0) Round(rx0, ry0, xf, ry1, Mul(_heal, a * b.Glow[p] * 0.7f), r, roundLeft, right);
         if (b.Flash[p] > 0) Rect(MathF.Max(rx0, xf - 2), ry0, MathF.Min(rx1, xf + 1), ry1, Mul(0xFFFFFFFF, a * b.Flash[p]));
     }
@@ -248,23 +288,26 @@ public sealed class BarRenderer
     private readonly int[] _layers = new int[Bar.PoolCount];
 
     /// <summary>
-    /// Pixel thickness of each pool's layer: proportional to its max, summing exactly to the bar height (largest remainder),
-    /// at least 2 px for any pool present when the bar is tall enough, so a small ES or ward share stays visible.
+    /// Pixel thickness of each pool's layer: proportional to its animated share (so a pool appearing or a max changing
+    /// glides instead of jumping), summing exactly to the bar height (largest remainder), at least 2 px for any pool present
+    /// when the bar is tall enough, so a small ES or ward share stays visible.
     /// </summary>
     private int[] Layers(Bar b, int h)
     {
         Array.Clear(_layers);
-        var total = b.MaxTotal;
+        var total = 0f;
         var present = 0;
-        for (var p = 0; p < Bar.PoolCount; p++) if (b.Max[p] > 0) present++;
+        for (var p = 0; p < Bar.PoolCount; p++)
+            if (b.Share[p] > 0.001f) { present++; total += b.Share[p]; }
+        if (present == 0) return _layers;
         var min = h >= present * 2 ? 2 : h >= present ? 1 : 0;
         var free = h - min * present;
         var used = 0;
         Span<float> rem = stackalloc float[Bar.PoolCount];
         for (var p = 0; p < Bar.PoolCount; p++)
         {
-            if (b.Max[p] <= 0) continue;
-            var exact = free * (float)b.Max[p] / total;
+            if (b.Share[p] <= 0.001f) continue;
+            var exact = free * b.Share[p] / total;
             _layers[p] = min + (int)exact;
             rem[p] = exact - (int)exact;
             used += _layers[p];
@@ -273,7 +316,7 @@ public sealed class BarRenderer
         {
             var best = -1;
             for (var p = 0; p < Bar.PoolCount; p++)
-                if (b.Max[p] > 0 && (best < 0 || rem[p] > rem[best])) best = p;
+                if (b.Share[p] > 0.001f && (best < 0 || rem[p] > rem[best])) best = p;
             if (best < 0) break;
             _layers[best]++;
             rem[best] = -1;
@@ -294,7 +337,8 @@ public sealed class BarRenderer
         float t = cut && isTop ? 1 : 0, bt = cut && isBottom ? 1 : 0;
         if (xt > xf) CutRect(xf, ly0, xt, ly1, Mul(_trail, a), x0, x1, t, bt);
         if (xf <= x0) return;
-        CutRect(x0, ly0, xf, ly1, Mul(col, a), x0, x1, t, bt);
+        var fill = b.Temp[p] ? a * VeilAlpha(b.Veil[p]) : a;
+        CutRect(x0, ly0, xf, ly1, Mul(col, fill), x0, x1, t, bt);
         if (b.Glow[p] > 0) CutRect(x0, ly0, xf, ly1, Mul(_heal, a * b.Glow[p] * 0.7f), x0, x1, t, bt);
         if (b.Flash[p] > 0) Rect(MathF.Max(x0, xf - 2), ly0, MathF.Min(x1, xf + 1), ly1, Mul(0xFFFFFFFF, a * b.Flash[p]));
     }
@@ -308,6 +352,7 @@ public sealed class BarRenderer
         if (left) Rect(rx0, ry0 + cutTop, rx0 + 1, ry1 - cutBottom, col);
         if (right && rx1 - 1 > rx0) Rect(rx1 - 1, ry0 + cutTop, rx1, ry1 - cutBottom, col);
     }
+
 
     private float LabelWidth(string label)
     {
@@ -491,8 +536,8 @@ public sealed class BarRenderer
 
     private static string[] BuildPercent()
     {
-        var a = new string[101];
-        for (var i = 0; i <= 100; i++) a[i] = i + "%";
+        var a = new string[1000];
+        for (var i = 0; i < a.Length; i++) a[i] = i + "%";
         return a;
     }
 }
