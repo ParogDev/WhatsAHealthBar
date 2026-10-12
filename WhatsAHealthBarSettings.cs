@@ -221,9 +221,9 @@ public sealed class MotionSettings
                            "constant lag of about one game frame (the state's motion.lagMs)")]
     public ToggleNode Interpolate { get; set; } = new(true);
 
-    [Menu("Sub-pixel", "Moving bars are drawn at fractional positions (blended into the next pixel) instead of jumping a whole " +
+    [Menu("Sub-pixel (experimental)", "Off by default: blending copies made bars flicker in play. Moving bars are drawn at fractional positions (blended into the next pixel) instead of jumping a whole " +
                        "pixel at a time; bars at rest snap to whole pixels so they stay crisp and don't flicker between two")]
-    public ToggleNode SubPixel { get; set; } = new(true);
+    public ToggleNode SubPixel { get; set; } = new(false);
 }
 
 [Submenu(CollapsedByDefault = true)]

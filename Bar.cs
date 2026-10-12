@@ -54,7 +54,8 @@ public sealed class Bar
     public int Samples;
     public long MotionFrame = -10;
     public float RestX = float.NaN, RestY = float.NaN;
-    public double MovedAt = double.NegativeInfinity;
+    public double MovedAt = double.NegativeInfinity, SpeedAt;
+    public float Speed;
     public readonly int[] Cur = new int[PoolCount];
     /// <summary>The game's (unreserved) max; 0 when the pool has none.</summary>
     public readonly int[] BaseMax = new int[PoolCount];
