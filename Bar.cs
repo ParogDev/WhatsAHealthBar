@@ -8,7 +8,7 @@ namespace WhatsAHealthBar;
 public enum BarKind : byte { Unique, Rare, Magic, Normal, Minion, Player, Self }
 
 /// <summary>
-/// One tracked entity (or a preview sample when <see cref="Entity"/> is null). Components are looked up once and held;
+/// One tracked entity (or a preview sample when <see cref="Entity"/> is null). Components are looked up again at the classify rate (a boss phase change swaps them);
 /// classification (kind, wanted, height, which pools exist) runs at the classify rate; position, pools and animation every
 /// frame for wanted bars only.
 ///
