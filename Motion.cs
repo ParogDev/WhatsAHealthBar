@@ -28,6 +28,7 @@ public sealed class Motion
     private readonly double[] _t = { double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity }; // advances, oldest first
     private float _interval = 1 / 60f;
     private int _framesSinceAdvance;
+    private long _frame;
 
     /// <summary>The measured game frame interval (seconds).</summary>
     public float Interval => _interval;
@@ -50,6 +51,7 @@ public sealed class Motion
         for (var i = 0; i < bars.Count && !advanced; i++) advanced = worldMoved[i];
 
         _framesSinceAdvance++;
+        _frame++;
         if (advanced)
         {
             var gap = now - _t[2];
@@ -70,7 +72,10 @@ public sealed class Motion
         foreach (var b in bars)
         {
             var raw = b.Screen;
-            if (b.Samples == 0 || Vector2.DistanceSquared(raw, b.S2) > SnapPx * SnapPx)
+            // A bar that wasn't drawn last frame (off screen, hidden, faded) starts fresh instead of sliding from old samples.
+            var fresh = b.MotionFrame != _frame - 1;
+            b.MotionFrame = _frame;
+            if (fresh || b.Samples == 0 || Vector2.DistanceSquared(raw, b.S2) > SnapPx * SnapPx)
             {
                 b.S0 = b.S1 = b.S2 = raw;
                 b.Samples = 1;

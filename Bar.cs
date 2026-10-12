@@ -52,6 +52,7 @@ public sealed class Bar
     // (hysteresis) and when it last moved.
     public Vector2 S0, S1, S2, Raw1, Raw2, Shown1, Shown2;
     public int Samples;
+    public long MotionFrame = -10;
     public float RestX = float.NaN, RestY = float.NaN;
     public double MovedAt = double.NegativeInfinity;
     public readonly int[] Cur = new int[PoolCount];
