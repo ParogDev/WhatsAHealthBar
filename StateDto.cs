@@ -45,6 +45,13 @@ public sealed class HealthBarTimingsDto
     /// <summary>(Tick + Render) per drawn bar, nanoseconds: the cost of one more bar on screen.</summary>
     public double PerBarNs { get; set; }
     public int ClassifyHz { get; set; }
+    /// <summary>Quads written into the draw list last frame (all bars, one batch).</summary>
+    public int Quads { get; set; }
+    /// <summary>Render split: building the quads from the bars, and writing them into the draw list.</summary>
+    public double BuildUs { get; set; }
+    public double FlushUs { get; set; }
+    /// <summary>"batched" (vertices written straight into the draw list), or "fallback: why" (one ImGui call per quad).</summary>
+    public string RenderPath { get; set; } = "";
     /// <summary>Max values cover the last 5 seconds.</summary>
     public int WindowSec { get; set; } = 5;
 }
@@ -55,6 +62,8 @@ public sealed class HealthBarPreviewDto
     public double SecondsLeft { get; set; }
     /// <summary>The kind the preview puts first (from the control center's focused group), or null.</summary>
     public string? Focus { get; set; }
+    /// <summary>Bars the preview draws (7 samples plus the stress grid); PerBarNs counts them while it runs.</summary>
+    public int Bars { get; set; }
 }
 
 public sealed class HealthBarBridgeDto
@@ -66,6 +75,18 @@ public sealed class HealthBarBridgeDto
     public string PublishKills { get; set; } = "";
 }
 
+/// <summary>What WhatsAHealthBar.Preview answers.</summary>
+public sealed class PreviewReplyDto
+{
+    public bool Ok { get; set; }
+    public double Seconds { get; set; }
+    public string? Focus { get; set; }
+    /// <summary>Extra bars drawn on a grid to measure the many-bars cost.</summary>
+    public int Stress { get; set; }
+    public string? Error { get; set; }
+    public string? Message { get; set; }
+}
+
 /// <summary>The data of a healthbars.kill event.</summary>
 public sealed class HealthBarKillDto
 {
@@ -74,6 +95,7 @@ public sealed class HealthBarKillDto
     public string? Path { get; set; }
     public int MaxLife { get; set; }
     public int MaxEs { get; set; }
+    public int MaxWard { get; set; }
     /// <summary>From the first hit the plugin saw to death, milliseconds (null when it died before a hit was seen).</summary>
     public int? TimeToKillMs { get; set; }
     public string? Area { get; set; }

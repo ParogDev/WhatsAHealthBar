@@ -52,6 +52,12 @@ public sealed class WhatsAHealthBarSettings : ISettings
     public ButtonNode Preview { get; set; } = new();
 }
 
+/// <summary>The Pools choices.</summary>
+public static class Bars
+{
+    public const string Stacked = "Stacked", LifeOnly = "Life only", EsStrip = "ES strip";
+}
+
 [Submenu(CollapsedByDefault = true)]
 public sealed class VisibilitySettings
 {
@@ -130,16 +136,24 @@ public sealed class LookSettings
     public ColorNode BackgroundColor { get; set; } = Color.FromArgb(200, 22, 20, 24);
 
     [Menu("Damage trail")]
-    public ColorNode TrailColor { get; set; } = Color.FromArgb(235, 255, 236, 200);
+    public ColorNode TrailColor { get; set; } = Color.FromArgb(215, 255, 250, 242);
 
     [Menu("Heal glow")]
     public ColorNode HealColor { get; set; } = Color.FromArgb(220, 150, 255, 170);
 
-    [Menu("Energy shield")]
-    public ColorNode EsColor { get; set; } = Color.FromArgb(240, 120, 210, 255);
+    [Menu("Pools", "Stacked: one bar as wide as life + energy shield + ward, each pool its share in its own color, laid out in the " +
+                   "order damage takes them (life, then ES, then ward on the right), with a notch at the end of the life share. " +
+                   "Life only: ES and ward are not shown. ES strip: the bar is life, ES a thin strip over its top")]
+    public ListNode Pools { get; set; } = new() { Values = new() { Bars.Stacked, Bars.LifeOnly, Bars.EsStrip }, Value = Bars.Stacked };
 
-    [Menu("Show energy shield", "A thin strip over the top of the life bar")]
-    public ToggleNode ShowEs { get; set; } = new(true);
+    [Menu("Energy shield")]
+    public ColorNode EsColor { get; set; } = Color.FromArgb(245, 176, 226, 255);
+
+    [Menu("Ward")]
+    public ColorNode WardColor { get; set; } = Color.FromArgb(245, 176, 132, 255);
+
+    [Menu("Life notch", "With stacked pools: a notch at the end of the life share, so ES- or ward-heavy monsters show how much is life")]
+    public ToggleNode LifeNotch { get; set; } = new(true);
 
     [Menu("Gloss", "Strength of the shine on the top half of the fill")]
     public RangeNode<float> Gloss { get; set; } = new(0.22f, 0f, 0.6f);
@@ -172,7 +186,7 @@ public sealed class KindSettings
     [Menu("Segments", "Divider notches across the bar (0: none), e.g. 10 = every 10%")]
     public RangeNode<int> Segments { get; set; } = new(0, 0, 20);
 
-    [Menu("Show percent", "Life % next to the bar")]
+    [Menu("Show percent", "How full the bar is, in % (life + ES + ward when pools are stacked)")]
     public ToggleNode ShowPercent { get; set; } = new(false);
 
     public static KindSettings Make(bool show, int width, int height, Color life, int segments, bool percent) => new()

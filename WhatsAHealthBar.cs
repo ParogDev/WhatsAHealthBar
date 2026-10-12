@@ -37,6 +37,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private readonly int[] _byKind = new int[7];
     private readonly LinkedList<HealthBarKillDto> _kills = new();
     private readonly Random _rng = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<(double seconds, string? focus, int stress)> _previewRequests = new();
+    private Bar[] _previewOrder = Array.Empty<Bar>(), _stress = Array.Empty<Bar>();
 
     private double _now, _lastFrame, _nextClassify, _nextUiCheck, _nextWindow, _previewUntil, _nextPreviewHit;
     private float _dt, _resolutionScale = 1;
@@ -46,7 +48,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private int _peakDrawn, _wanted;
 
     // Own timings (microseconds): moving averages, and maxima over a 5 s window.
-    private double _tickUs, _renderUs, _classifyUs, _tickMax, _renderMax, _tickMaxNext, _renderMaxNext, _maxWindowEnd;
+    private double _tickUs, _renderUs, _classifyUs, _buildUs, _flushUs, _tickMax, _renderMax, _tickMaxNext, _renderMaxNext, _maxWindowEnd;
 
     public override bool Initialise()
     {
@@ -69,13 +71,17 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         _inTown = area?.IsTown == true;
         _inHideout = area?.IsHideout == true;
         _area = area?.DisplayName;
+        // Entities the HUD already knows (added before this callback, or before a plugin reload) get no EntityAdded again.
+        var lists = GameController.EntityListWrapper.ValidEntitiesByType;
+        foreach (var e in lists[EntityType.Monster]) EntityAdded(e);
+        foreach (var e in lists[EntityType.Player]) EntityAdded(e);
     }
 
     public override void EntityAdded(Entity entity)
     {
         if (entity.Type is not (EntityType.Monster or EntityType.Player)) return;
         if (_byId.ContainsKey(entity.Id)) return;
-        var bar = new Bar { Entity = entity, Id = entity.Id, Kind = BarKind.Normal };
+        var bar = new Bar { Entity = entity, Id = entity.Id, Kind = BarKind.Normal, Index = _bars.Count };
         _byId[entity.Id] = bar;
         _bars.Add(bar);
         _nextClassify = 0;
@@ -84,7 +90,11 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     public override void EntityRemoved(Entity entity)
     {
         if (!_byId.Remove(entity.Id, out var bar)) return;
-        _bars.Remove(bar);
+        // Swap-remove: O(1), so an area emptying hundreds of monsters at once doesn't hitch.
+        var last = _bars[^1];
+        _bars[bar.Index] = last;
+        last.Index = bar.Index;
+        _bars.RemoveAt(_bars.Count - 1);
     }
 
     public override void Tick()
@@ -98,7 +108,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
         _link.Refresh(GameController.PluginBridge, _now);
         while (_link.TryTakePreview(out var msg))
-            StartPreview(msg?["seconds"]?.Value<double?>() ?? 8, (string?)msg?["focus"]);
+            StartPreview(msg?["seconds"]?.Value<double?>() ?? 8, (string?)msg?["focus"], msg?["stress"]?.Value<int?>() ?? 0);
+        while (_previewRequests.TryDequeue(out var req)) StartPreview(req.seconds, req.focus, req.stress);
 
         _active = Evaluate();
         _renderer.Prepare(Settings, _resolutionScale);
@@ -173,10 +184,23 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 if (b.Seen && !b.Dying) Die(b, publish);
                 continue;
             }
-            b.Dying = false;
             b.Life ??= e.GetComponent<Life>();
             b.Render ??= e.GetComponent<Render>();
             if (b.Life == null || b.Render == null || e.IsHidden) continue;
+            var life = b.Life;
+            if (b.Dying)
+            {
+                // IsAlive can lag CurHP by a frame: stay dead unless it really came back (a revive).
+                if (life.CurHP <= 0) continue;
+                b.Dying = false;
+                b.Published = false;
+                b.FirstHitAt = 0;
+            }
+            // Which pools exist (max values, at the classify rate): the frame loop reads ES and ward only when present.
+            b.MaxEs = _renderer.WantsEs ? life.MaxES : 0;
+            b.MaxWard = _renderer.Stacked ? life.Ward.Max : 0;
+            if (b.MaxEs == 0) b.Es = 0;
+            if (b.MaxWard == 0) b.Ward = 0;
 
             b.Kind = e.Type == EntityType.Player
                 ? e.Address == playerAddr ? BarKind.Self : BarKind.Player
@@ -190,13 +214,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 };
             if (!_renderer.Styles[(int)b.Kind].Show) continue;
             if (b.Kind != BarKind.Self && Vector2.DistanceSquared(e.GridPos, pg) > maxD2) continue;
-            if (b.Kind == BarKind.Minion && b.Seen && b.LifeFraction >= minionBelow && minionBelow < 1) continue;
-            if (hideFull && b.Kind == BarKind.Normal && (!b.Seen || b.Hp >= b.MaxHp) && b.FirstHitAt == 0)
-            {
-                // Read life here (10 Hz) so the first hit shows the bar without a per-frame read for every untouched normal.
-                var life = b.Life;
-                if (life.CurHP >= life.MaxHP) continue;
-            }
+            // Life read here (classify rate) for the hidden-until-hurt rules, so those bars cost nothing per frame until
+            // they qualify, and reappear as soon as they do.
+            if (b.Kind == BarKind.Minion && minionBelow < 1 && life.MaxHP > 0 && life.CurHP >= life.MaxHP * minionBelow) continue;
+            if (hideFull && b.Kind == BarKind.Normal && b.FirstHitAt == 0 && life.CurHP >= life.MaxHP) continue;
             b.TopZ = -b.Render.Bounds.Z;
             b.Wanted = true;
             _wanted++;
@@ -209,6 +230,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         var snap = GameController.IngameState.Camera.Snapshot;
         var z = Settings.Visibility.ZOffset.Value;
         var anim = Anim();
+        var stacked = _renderer.Stacked;
         var margin = 64f;
 
         foreach (var b in _bars)
@@ -217,7 +239,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             if (!b.Dying && b.Render != null && b.Entity!.IsValid)
             {
                 var p = b.Render.Pos;
-                b.World = p with { Z = p.Z + b.TopZ - z };
+                b.World = p with { Z = p.Z + b.TopZ + z };
             }
             var s = snap.WorldToScreen(b.World);
             if (s == Vector2.Zero || s.X < -margin || s.Y < -margin || s.X > _window.X + margin || s.Y > _window.Y + margin)
@@ -232,12 +254,13 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 var life = b.Life;
                 b.Hp = life.CurHP;
                 b.MaxHp = life.MaxHP;
-                b.Es = life.CurES;
-                b.MaxEs = life.MaxES;
+                if (b.MaxEs > 0) b.Es = life.CurES;
+                if (b.MaxWard > 0) b.Ward = life.Ward.Current;
                 if (b.MaxHp <= 0) continue;
+                if (b.FirstHitAt == 0 && b.Seen && b.Hp + b.Es + b.Ward < b.MaxHp + b.MaxEs + b.MaxWard) b.FirstHitAt = _now;
                 if (b.Hp <= 0 && b.Seen) Die(b, Settings.Bridge.PublishKills.Value);
             }
-            b.Animate(b.Dying ? 0 : b.LifeFraction, b.MaxEs > 0 ? Math.Clamp(b.Es / (float)b.MaxEs, 0, 1) : 0, _now, _dt, anim);
+            b.Animate(b.Dying ? 0 : b.Fraction(stacked), _now, _dt, anim);
             if (b.Alpha <= 0.004f) continue;
             _drawList.Add(b);
             _byKind[(int)b.Kind]++;
@@ -257,7 +280,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         b.Dying = true;
         b.Wanted = false;
-        b.Hp = 0;
+        b.Hp = b.Es = b.Ward = 0;
         if (b.Published || b.Entity == null) return;
         var publishIt = publish switch
         {
@@ -274,6 +297,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             Path = b.Entity.Path,
             MaxLife = b.MaxHp,
             MaxEs = b.MaxEs,
+            MaxWard = b.MaxWard,
             TimeToKillMs = b.FirstHitAt > 0 ? (int)((_now - b.FirstHitAt) * 1000) : null,
             Area = _area,
             At = DateTime.UtcNow.ToString("o"),
@@ -292,11 +316,17 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         var previewing = _now < _previewUntil;
         if ((_active && _drawList.Count > 0) || previewing)
         {
-            var dl = ImGui.GetBackgroundDrawList();
-            var showEs = Settings.Look.ShowEs.Value;
-            foreach (var b in _drawList) _renderer.Draw(dl, b, showEs, _now);
+            _renderer.Begin();
+            foreach (var b in _drawList) _renderer.Draw(b, _now);
             if (previewing)
-                foreach (var b in _preview) _renderer.Draw(dl, b, showEs, _now, BarRenderer.KindNames[(int)b.Kind]);
+            {
+                foreach (var b in _stress) _renderer.Draw(b, _now);
+                foreach (var b in _previewOrder) _renderer.Draw(b, _now, BarRenderer.KindNames[(int)b.Kind]);
+            }
+            var f0 = Stopwatch.GetTimestamp();
+            _buildUs += (Stopwatch.GetElapsedTime(t0, f0).TotalMicroseconds - _buildUs) * 0.05;
+            _renderer.Flush(ImGui.GetBackgroundDrawList());
+            _flushUs += (Stopwatch.GetElapsedTime(f0).TotalMicroseconds - _flushUs) * 0.05;
         }
 
         var us = Stopwatch.GetElapsedTime(t0).TotalMicroseconds;
@@ -312,20 +342,39 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
     // ---- Preview: sample bars in the middle of the screen with fake hits and heals ----
 
-    private void StartPreview(double seconds, string? focus)
+    /// <summary>
+    /// Sample pools per kind, so the preview shows every mix: life + ES (unique), mostly ES (rare), life + ward (magic),
+    /// life only (normal, minion), and all three (you).
+    /// </summary>
+    private static readonly (int life, int es, int ward)[] PreviewPools =
+        { (600, 400, 0), (150, 850, 0), (400, 0, 600), (1000, 0, 0), (1000, 0, 0), (700, 300, 0), (500, 300, 200) };
+
+    /// <summary>Main thread only (Tick, the menu button): bridge calls queue through <see cref="_previewRequests"/>.</summary>
+    private void StartPreview(double seconds, string? focus, int stress = 0)
     {
         _previewUntil = _clock.Elapsed.TotalSeconds + Math.Clamp(seconds, 0, 60);
         _previewFocus = focus;
         foreach (var b in _preview)
         {
-            b.Seen = false; b.Dying = false; b.Hp = b.MaxHp = 1000; b.MaxEs = b.Kind is BarKind.Unique or BarKind.Player or BarKind.Self ? 400 : 0;
-            b.Es = b.MaxEs; b.FirstHitAt = 0;
+            var (life, es, ward) = PreviewPools[(int)b.Kind];
+            b.Seen = false; b.Dying = false; b.FirstHitAt = 0;
+            b.Hp = b.MaxHp = life; b.Es = b.MaxEs = es; b.Ward = b.MaxWard = ward;
+        }
+        // The focused kind first, then the rest in their natural order.
+        _previewOrder = _preview.OrderBy(b => string.Equals(b.Kind.ToString(), focus, StringComparison.OrdinalIgnoreCase) ? -1 : (int)b.Kind).ToArray();
+        _stress = new Bar[Math.Clamp(stress, 0, 2000)];
+        for (var i = 0; i < _stress.Length; i++)
+        {
+            var kind = (BarKind)(i % 4 == 0 ? i / 4 % 4 : 3); // mostly normals, like a real pack
+            var (life, es, ward) = PreviewPools[(int)kind];
+            _stress[i] = new Bar { Kind = kind, Wanted = true, Hp = life, MaxHp = life, Es = es, MaxEs = es, Ward = ward, MaxWard = ward };
         }
     }
 
+    /// <summary>PluginBridge WhatsAHealthBar.Preview (any thread): queued for Tick.</summary>
     private string PreviewFromBridge(string arg)
     {
-        double seconds = 8; string? focus = null;
+        double seconds = 8; string? focus = null; var stress = 0;
         if (!string.IsNullOrWhiteSpace(arg))
         {
             if (double.TryParse(arg, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s)) seconds = s;
@@ -335,33 +384,65 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                     var j = JObject.Parse(arg);
                     seconds = j["seconds"]?.Value<double?>() ?? 8;
                     focus = (string?)j["focus"];
+                    stress = j["stress"]?.Value<int?>() ?? 0;
                 }
-                catch (Exception ex) { return JsonConvert.SerializeObject(new { ok = false, error = "bad_argument", message = $"Preview takes seconds or {{seconds, focus}} JSON: {ex.Message}" }); }
+                catch (Exception ex)
+                {
+                    return JsonConvert.SerializeObject(new PreviewReplyDto
+                        { Ok = false, Error = "bad_argument", Message = $"Preview takes seconds or {{seconds, focus}} JSON: {ex.Message}" });
+                }
         }
-        StartPreview(seconds, focus);
-        return JsonConvert.SerializeObject(new { ok = true, seconds, focus });
+        _previewRequests.Enqueue((seconds, focus, stress));
+        return JsonConvert.SerializeObject(new PreviewReplyDto { Ok = true, Seconds = seconds, Focus = focus, Stress = stress });
     }
 
     private void UpdatePreview()
     {
         var anim = Anim();
+        var stacked = _renderer.Stacked;
         var hit = _now >= _nextPreviewHit;
         if (hit) _nextPreviewHit = _now + 0.7;
-        var focus = _previewFocus;
-        var order = 0;
         var y = _window.Y * 0.30f;
-        // The focused kind first, then the rest in their natural order.
-        foreach (var b in _preview.OrderBy(b => string.Equals(b.Kind.ToString(), focus, StringComparison.OrdinalIgnoreCase) ? -1 : (int)b.Kind))
+        for (var i = 0; i < _previewOrder.Length; i++)
         {
+            var b = _previewOrder[i];
             if (hit)
             {
-                if (b.Hp <= b.MaxHp * 0.12) { b.Hp = b.MaxHp; b.Es = b.MaxEs; }
-                else if (b.Es > 0) b.Es = Math.Max(0, b.Es - _rng.Next(80, 220));
-                else b.Hp = Math.Max(1, b.Hp - _rng.Next(60, 220));
+                // Damage takes ward, then ES, then life; near empty, everything refills (a heal).
+                var total = b.MaxHp + b.MaxEs + b.MaxWard;
+                if (b.Hp + b.Es + b.Ward <= total * 0.12) { b.Hp = b.MaxHp; b.Es = b.MaxEs; b.Ward = b.MaxWard; }
+                else
+                {
+                    var dmg = (int)(total * (0.06 + _rng.NextDouble() * 0.16));
+                    var w = Math.Min(b.Ward, dmg); b.Ward -= w; dmg -= w;
+                    var e = Math.Min(b.Es, dmg); b.Es -= e; dmg -= e;
+                    b.Hp = Math.Max(1, b.Hp - dmg);
+                }
             }
-            b.Screen = new Vector2(_window.X * 0.5f, y + order * 34 * _resolutionScale);
-            b.Animate(b.LifeFraction, b.MaxEs > 0 ? b.Es / (float)b.MaxEs : 0, _now, _dt, anim);
-            order++;
+            b.Screen = new Vector2(_window.X * 0.5f, y + i * 34 * _resolutionScale);
+            b.Animate(b.Fraction(stacked), _now, _dt, anim);
+        }
+
+        // Stress: N bars on a grid over the screen, a few hit each frame, to measure the many-bars cost.
+        if (_stress.Length == 0) return;
+        var cols = Math.Max(1, (int)(_window.X / 90));
+        for (var i = 0; i < _stress.Length; i++)
+        {
+            var b = _stress[i];
+            if (_rng.Next(40) == 0)
+            {
+                var total = b.MaxHp + b.MaxEs + b.MaxWard;
+                if (b.Hp + b.Es + b.Ward <= total * 0.15) { b.Hp = b.MaxHp; b.Es = b.MaxEs; b.Ward = b.MaxWard; }
+                else
+                {
+                    var dmg = (int)(total * 0.12);
+                    var w = Math.Min(b.Ward, dmg); b.Ward -= w; dmg -= w;
+                    var e = Math.Min(b.Es, dmg); b.Es -= e; dmg -= e;
+                    b.Hp = Math.Max(1, b.Hp - dmg);
+                }
+            }
+            b.Screen = new Vector2(45 + i % cols * 90, 60 + i / cols * 22);
+            b.Animate(b.Fraction(stacked), _now, _dt, anim);
         }
     }
 
@@ -369,6 +450,9 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
     private string GetStateJson()
     {
+        var previewing = _now < _previewUntil;
+        var previewBars = previewing ? _previewOrder.Length + _stress.Length : 0;
+        var barsNow = _drawList.Count + previewBars;
         var state = new HealthBarStateDto
         {
             Enabled = Settings.Enable,
@@ -389,12 +473,17 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 RenderUs = Math.Round(_renderUs, 1),
                 RenderMaxUs = Math.Round(Math.Max(_renderMax, _renderMaxNext), 1),
                 ClassifyUs = Math.Round(_classifyUs, 1),
-                PerBarNs = _drawList.Count > 0 ? Math.Round((_tickUs + _renderUs) * 1000 / _drawList.Count) : 0,
+                PerBarNs = barsNow > 0 ? Math.Round((_tickUs + _renderUs) * 1000 / barsNow) : 0,
                 ClassifyHz = Settings.Visibility.ClassifyHz.Value,
+                Quads = _renderer.LastQuads,
+                BuildUs = Math.Round(_buildUs, 1),
+                FlushUs = Math.Round(_flushUs, 1),
+                RenderPath = _renderer.Path,
             },
             Preview = new HealthBarPreviewDto
             {
-                Active = _now < _previewUntil,
+                Active = previewing,
+                Bars = previewBars,
                 SecondsLeft = Math.Max(0, Math.Round(_previewUntil - _now, 1)),
                 Focus = _previewFocus,
             },

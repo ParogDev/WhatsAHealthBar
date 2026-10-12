@@ -9,13 +9,15 @@ public enum BarKind : byte { Unique, Rare, Magic, Normal, Minion, Player, Self }
 
 /// <summary>
 /// One tracked entity (or a preview sample when <see cref="Entity"/> is null). Components are looked up once and held;
-/// classification (kind, wanted, height) runs at the classify rate, position, life and animation every frame for
-/// wanted bars only.
+/// classification (kind, wanted, height, which pools exist) runs at the classify rate, position, pools and animation every
+/// frame for wanted bars only.
 /// </summary>
 public sealed class Bar
 {
     public Entity? Entity;
     public uint Id;
+    /// <summary>Position in the plugin's bar list (swap-remove).</summary>
+    public int Index;
     public Life? Life;
     public Render? Render;
 
@@ -24,14 +26,15 @@ public sealed class Bar
     public bool Wanted;
     public float TopZ;
 
-    // Frame data
+    // Frame data. Pools: life, energy shield and ward (current and max); ES and ward are read per frame only when the
+    // monster has them (their max is read at the classify rate).
     public Vector3 World;
     public Vector2 Screen;
-    public int Hp, MaxHp, Es, MaxEs;
+    public int Hp, MaxHp, Es, MaxEs, Ward, MaxWard;
     public bool Seen;
 
-    // Animation
-    public float Shown, Trail, EsShown, Flash, Glow, Alpha;
+    // Animation, as a fraction of the bar's whole width (see Fraction)
+    public float Shown, Trail, Flash, Glow, Alpha;
     public double TrailHoldUntil;
 
     // Death and kill timing
@@ -41,24 +44,34 @@ public sealed class Bar
 
     public float LifeFraction => MaxHp > 0 ? Math.Clamp(Hp / (float)MaxHp, 0, 1) : 0;
 
+    /// <summary>The bar's width in pool points: life alone, or life + ES + ward when pools are stacked.</summary>
+    public int MaxTotal(bool stacked) => stacked ? MaxHp + MaxEs + MaxWard : MaxHp;
+
+    /// <summary>How full the bar is: (life + ES + ward) / their maxima when stacked, else life alone.</summary>
+    public float Fraction(bool stacked)
+    {
+        var max = MaxTotal(stacked);
+        if (max <= 0) return 0;
+        var cur = stacked ? Hp + Es + Ward : Hp;
+        return Math.Clamp(cur / (float)max, 0, 1);
+    }
+
     /// <summary>
-    /// Moves the animated values toward the current life and ES. A hit drops the fill at once (crisp) and leaves a trail
-    /// chip that holds, then drains; a heal fills smoothly with a glow. Animations off: values jump.
+    /// Moves the animated values toward <paramref name="target"/>. A hit drops the fill at once (crisp) and leaves a trail
+    /// chip that holds, then drains; a heal (or ES recharge) fills smoothly with a glow. Animations off: values jump.
     /// </summary>
-    public void Animate(float target, float es, double now, float dt, in AnimParams p)
+    public void Animate(float target, double now, float dt, in AnimParams p)
     {
         if (!Seen)
         {
             Seen = true;
             Shown = Trail = target;
-            EsShown = es;
-            Alpha = p.FadeRate > 0 ? 0 : 1;
+            Alpha = p.Enabled && p.FadeRate > 0 ? 0 : 1;
         }
 
         if (!p.Enabled)
         {
             Shown = Trail = target;
-            EsShown = es;
             Flash = Glow = 0;
             Alpha = Dying ? 0 : 1;
             return;
@@ -70,7 +83,6 @@ public sealed class Bar
             Shown = target;
             TrailHoldUntil = now + p.TrailHold;
             if (p.HitFlash) Flash = 1;
-            if (FirstHitAt == 0) FirstHitAt = now;
         }
         else if (target > Shown + 0.0005f)
         {
@@ -87,7 +99,6 @@ public sealed class Bar
         }
         if (Trail < Shown) Trail = Shown;
 
-        EsShown += (es - EsShown) * Ease(14f, dt);
         if (Flash > 0) Flash = MathF.Max(0, Flash - dt * 7f);
         if (Glow > 0) Glow = MathF.Max(0, Glow - dt * 2.2f);
 
