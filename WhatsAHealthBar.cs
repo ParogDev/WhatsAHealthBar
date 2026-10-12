@@ -354,7 +354,9 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         var t0 = Stopwatch.GetTimestamp();
         var previewing = _now < _previewUntil;
-        if ((_active && _drawList.Count > 0) || previewing)
+        // The overlay is a topmost window: with another window in front of the game, the bars would land on that window.
+        var inFront = GameController.IsForeGroundCache && GameInFront.Check(GameController.Window.Process.Id);
+        if (inFront && ((_active && _drawList.Count > 0) || previewing))
         {
             _renderer.Begin();
             foreach (var b in _drawList) _renderer.Draw(b, _now);
