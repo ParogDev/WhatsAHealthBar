@@ -32,6 +32,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private readonly List<Bar> _drawList = new(512);
 
     private readonly BarRenderer _renderer = new();
+    private readonly Motion _motion = new();
+    private bool[] _moved = new bool[512];
     private readonly AiBridgeLink _link = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
     private readonly int[] _byKind = new int[7];
@@ -114,6 +116,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
         _active = Evaluate();
         _renderer.Prepare(Settings, _resolutionScale);
+        _renderer.SubPixel = Settings.Motion.SubPixel.Value;
         if (_active)
         {
             if (_now >= _nextClassify)
@@ -244,10 +247,13 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         foreach (var b in _bars)
         {
             if (!b.Wanted && (b.Alpha <= 0 || !b.Seen)) continue;
+            var moved = false;
             if (!b.Dying && b.Render != null && b.Entity!.IsValid)
             {
                 var p = b.Render.Pos;
-                b.World = p with { Z = p.Z + b.TopZ + z };
+                var w = p with { Z = p.Z + b.TopZ + z };
+                moved = w != b.World;
+                b.World = w;
             }
             var s = snap.WorldToScreen(b.World);
             if (s == Vector2.Zero || s.X < -margin || s.Y < -margin || s.X > _window.X + margin || s.Y > _window.Y + margin)
@@ -280,10 +286,14 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             }
             b.Animate(_now, _dt, anim);
             if (b.Alpha <= 0.004f) continue;
+            if (_drawList.Count == _moved.Length) Array.Resize(ref _moved, _moved.Length * 2);
+            _moved[_drawList.Count] = moved;
             _drawList.Add(b);
             _byKind[(int)b.Kind]++;
         }
         if (_drawList.Count > _peakDrawn) _peakDrawn = _drawList.Count;
+        // Evenly spaced motion: draw between the last two game frames (Motion.cs).
+        _motion.Apply(_drawList, snap.Matrix, _moved, _now, Settings.Motion.Interpolate.Value);
     }
 
     /// <summary>
@@ -491,6 +501,15 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 BuildUs = Math.Round(_buildUs, 1),
                 FlushUs = Math.Round(_flushUs, 1),
                 RenderPath = _renderer.Path,
+                Motion = new HealthBarMotionDto
+                {
+                    Interpolate = Settings.Motion.Interpolate.Value,
+                    SubPixel = Settings.Motion.SubPixel.Value,
+                    LagMs = Math.Round(_motion.Lag * 1000, 1),
+                    HudFramesPerGameFrame = Math.Round(_motion.FramesPerAdvance, 2),
+                    JitterRawPx = Math.Round(_motion.JitterRaw, 2),
+                    JitterShownPx = Math.Round(_motion.JitterShown, 2),
+                },
             },
             Preview = new HealthBarPreviewDto
             {

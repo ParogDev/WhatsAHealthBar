@@ -119,16 +119,70 @@ public sealed class BarRenderer
     }
 
     /// <summary>Appends one bar's quads (and text) to the batch.</summary>
+    /// <summary>Moving bars are drawn at fractional positions; bars at rest on whole pixels (with hysteresis).</summary>
+    public bool SubPixel { get; set; } = true;
+
+    /// <summary>Screen speed above which a bar counts as moving (sub-pixel blending on); below, it snaps to whole pixels.</summary>
+    private const float MovingPxPerSec = 40f;
+
+    /// <summary>
+    /// The blended copies redraw only opaque quads: a second copy of a translucent quad (the background, veils, gloss) would
+    /// stack opacity by the fraction, which changes every frame and reads as a pulse.
+    /// </summary>
+    private bool _opaqueOnly;
+    private float _copyAlpha = 1;
+
+    /// <summary>
+    /// Appends one bar. Its top-left is fractional (the interpolated position). At rest (no motion for 0.25 s) the bar keeps
+    /// a whole-pixel origin until it drifts 0.75 px, so it stays crisp and never flickers between two pixels. In motion it
+    /// is drawn at the whole pixel below, then again one pixel right at the fractional x as alpha, and one pixel down at
+    /// the fractional y: the blend places it between pixels (a linear resample of the opaque bar), so slow motion glides
+    /// instead of stepping a pixel at a time. Motion blurs the extra softness away; at rest nothing is blended.
+    /// </summary>
     public void Draw(Bar b, double now, string? label = null)
     {
         var st = Styles[(int)b.Kind];
-        var a = b.Alpha;
-        if (a <= 0.004f || b.MaxTotal <= 0) return;
-
+        if (b.Alpha <= 0.004f || b.MaxTotal <= 0) return;
         var w = MathF.Round(st.W);
         var h = MathF.Max(2, MathF.Round(st.H));
-        var x0 = MathF.Round(b.Screen.X - w * 0.5f);
-        var y0 = MathF.Round(b.Screen.Y - h);
+        var ox = b.Screen.X - w * 0.5f;
+        var oy = b.Screen.Y - h;
+        // Real movement only: a smoothed speed over ~0.1 s. Your own bar while the camera follows you sits nearly still on
+        // screen with sub-pixel wobble; reading that as motion switched it to blending every other frame (a flicker).
+        var step = (b.Shown1 - b.Shown2).Length();
+        var dt = MathF.Max(0.001f, (float)(now - b.SpeedAt));
+        b.SpeedAt = now;
+        b.Speed += (MathF.Min(step / dt, 5000) - b.Speed) * MathF.Min(1, dt / 0.1f);
+        if (b.Speed > MovingPxPerSec) b.MovedAt = now;
+        var moving = SubPixel && now - b.MovedAt < 0.25;
+
+        if (!moving)
+        {
+            if (float.IsNaN(b.RestX) || MathF.Abs(ox - b.RestX) > 0.75f || MathF.Abs(oy - b.RestY) > 0.75f)
+            {
+                b.RestX = MathF.Round(ox);
+                b.RestY = MathF.Round(oy);
+            }
+            DrawAt(b, b.RestX, b.RestY, w, h, 1, now, label);
+            return;
+        }
+        b.RestX = MathF.Round(ox);
+        b.RestY = MathF.Round(oy);
+        var ix = MathF.Floor(ox); var fx = ox - ix;
+        var iy = MathF.Floor(oy); var fy = oy - iy;
+        DrawAt(b, ix, iy, w, h, 1, now, label);
+        _opaqueOnly = true;
+        _copyAlpha = b.Alpha * fx;
+        if (fx > 0.02f) DrawAt(b, ix + 1, iy, w, h, fx, now, null, false);
+        _copyAlpha = b.Alpha * fy;
+        if (fy > 0.02f) DrawAt(b, ix, iy + 1, w, h, fy, now, null, false);
+        _opaqueOnly = false;
+    }
+
+    private void DrawAt(Bar b, float x0, float y0, float w, float h, float alphaMul, double now, string? label, bool text = true)
+    {
+        var st = Styles[(int)b.Kind];
+        var a = b.Alpha * alphaMul;
         var x1 = x0 + w;
         var y1 = y0 + h;
         var r = Math.Min(_rounding, (int)(h * 0.5f));
@@ -237,7 +291,7 @@ public sealed class BarRenderer
             if (total > 1.001f) Spill(spillX, below + 1, below + 1 + th, w, _text, a, total - 1);
         }
 
-        if (st.ShowPercent || label != null)
+        if (text && (st.ShowPercent || label != null))
         {
             var ty = MathF.Round(y0 + (h - _fontSize) * 0.5f);
             if (st.ShowPercent)
@@ -461,6 +515,12 @@ public sealed class BarRenderer
     private void Grad4(float x0, float y0, float x1, float y1, uint c0, uint c1, uint c2, uint c3)
     {
         if (x1 - x0 < 0.5f || y1 - y0 < 0.5f || ((c0 | c1 | c2 | c3) >> 24) == 0) return;
+        if (_opaqueOnly)
+        {
+            // In a blended copy: keep quads that were opaque before the copy's fraction was applied (_copyAlpha), scaled back.
+            var min = Math.Min(Math.Min(c0 >> 24, c1 >> 24), Math.Min(c2 >> 24, c3 >> 24));
+            if (min < 0.85f * 255 * _copyAlpha) return;
+        }
         if (_quadCount == _quads.Length) Array.Resize(ref _quads, _quads.Length * 2);
         ref var q = ref _quads[_quadCount++];
         q.X0 = x0; q.Y0 = y0; q.X1 = x1; q.Y1 = y1;

@@ -54,6 +54,8 @@ public sealed class HealthBarTimingsDto
     public double FlushUs { get; set; }
     /// <summary>"batched" (vertices written straight into the draw list), or "fallback: why" (one ImGui call per quad).</summary>
     public string RenderPath { get; set; } = "";
+    /// <summary>Smooth motion: the game frame interval (the interpolation's lag), HUD frames per game frame, and jitter.</summary>
+    public HealthBarMotionDto Motion { get; set; } = new();
     /// <summary>Max values cover the last 5 seconds.</summary>
     public int WindowSec { get; set; } = 5;
 }
@@ -75,6 +77,22 @@ public sealed class HealthBarBridgeDto
     public string Subscribes { get; set; } = AiBridgeLink.PreviewKind;
     public string Publishes { get; set; } = AiBridgeLink.KillKind;
     public string PublishKills { get; set; } = "";
+}
+
+public sealed class HealthBarMotionDto
+{
+    public bool Interpolate { get; set; }
+    public bool SubPixel { get; set; }
+    /// <summary>The measured game frame interval, ms: how far behind the newest game frame interpolated bars are drawn.</summary>
+    public double LagMs { get; set; }
+    /// <summary>HUD frames per game frame (above 1: the HUD runs faster than the game).</summary>
+    public double HudFramesPerGameFrame { get; set; }
+    /// <summary>
+    /// Average second difference of moving bars' screen positions per HUD frame, px: how unevenly they move. Raw is the
+    /// projection as read; Shown is what is drawn. Shown well under Raw = the interpolation removes the stutter.
+    /// </summary>
+    public double JitterRawPx { get; set; }
+    public double JitterShownPx { get; set; }
 }
 
 /// <summary>What WhatsAHealthBar.Preview answers.</summary>
