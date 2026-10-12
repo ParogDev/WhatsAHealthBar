@@ -46,6 +46,14 @@ public sealed class Bar
     // Frame data
     public Vector3 World;
     public Vector2 Screen;
+
+    // Motion (see Motion.cs): the projection at the last three game frames (oldest first), drawn at a render time between
+    // them; the last raw and shown positions for the jitter measurement; the whole-pixel origin a bar at rest keeps
+    // (hysteresis) and when it last moved.
+    public Vector2 S0, S1, S2, Raw1, Raw2, Shown1, Shown2;
+    public int Samples;
+    public float RestX = float.NaN, RestY = float.NaN;
+    public double MovedAt = double.NegativeInfinity;
     public readonly int[] Cur = new int[PoolCount];
     /// <summary>The game's (unreserved) max; 0 when the pool has none.</summary>
     public readonly int[] BaseMax = new int[PoolCount];

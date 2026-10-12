@@ -119,16 +119,50 @@ public sealed class BarRenderer
     }
 
     /// <summary>Appends one bar's quads (and text) to the batch.</summary>
+    /// <summary>Moving bars are drawn at fractional positions; bars at rest on whole pixels (with hysteresis).</summary>
+    public bool SubPixel { get; set; } = true;
+
+    /// <summary>
+    /// Appends one bar. Its top-left is fractional (the interpolated position). At rest (no motion for 0.25 s) the bar keeps
+    /// a whole-pixel origin until it drifts 0.75 px, so it stays crisp and never flickers between two pixels. In motion it
+    /// is drawn at the whole pixel below, then again one pixel right at the fractional x as alpha, and one pixel down at
+    /// the fractional y: the blend places it between pixels (a linear resample of the opaque bar), so slow motion glides
+    /// instead of stepping a pixel at a time. Motion blurs the extra softness away; at rest nothing is blended.
+    /// </summary>
     public void Draw(Bar b, double now, string? label = null)
     {
         var st = Styles[(int)b.Kind];
-        var a = b.Alpha;
-        if (a <= 0.004f || b.MaxTotal <= 0) return;
-
+        if (b.Alpha <= 0.004f || b.MaxTotal <= 0) return;
         var w = MathF.Round(st.W);
         var h = MathF.Max(2, MathF.Round(st.H));
-        var x0 = MathF.Round(b.Screen.X - w * 0.5f);
-        var y0 = MathF.Round(b.Screen.Y - h);
+        var ox = b.Screen.X - w * 0.5f;
+        var oy = b.Screen.Y - h;
+        if ((b.Shown1 - b.Shown2).LengthSquared() > 0.0025f) b.MovedAt = now;
+        var moving = SubPixel && now - b.MovedAt < 0.25;
+
+        if (!moving)
+        {
+            if (float.IsNaN(b.RestX) || MathF.Abs(ox - b.RestX) > 0.75f || MathF.Abs(oy - b.RestY) > 0.75f)
+            {
+                b.RestX = MathF.Round(ox);
+                b.RestY = MathF.Round(oy);
+            }
+            DrawAt(b, b.RestX, b.RestY, w, h, 1, now, label);
+            return;
+        }
+        b.RestX = MathF.Round(ox);
+        b.RestY = MathF.Round(oy);
+        var ix = MathF.Floor(ox); var fx = ox - ix;
+        var iy = MathF.Floor(oy); var fy = oy - iy;
+        DrawAt(b, ix, iy, w, h, 1, now, label);
+        if (fx > 0.02f) DrawAt(b, ix + 1, iy, w, h, fx, now, null, false);
+        if (fy > 0.02f) DrawAt(b, ix, iy + 1, w, h, fy, now, null, false);
+    }
+
+    private void DrawAt(Bar b, float x0, float y0, float w, float h, float alphaMul, double now, string? label, bool text = true)
+    {
+        var st = Styles[(int)b.Kind];
+        var a = b.Alpha * alphaMul;
         var x1 = x0 + w;
         var y1 = y0 + h;
         var r = Math.Min(_rounding, (int)(h * 0.5f));
@@ -237,7 +271,7 @@ public sealed class BarRenderer
             if (total > 1.001f) Spill(spillX, below + 1, below + 1 + th, w, _text, a, total - 1);
         }
 
-        if (st.ShowPercent || label != null)
+        if (text && (st.ShowPercent || label != null))
         {
             var ty = MathF.Round(y0 + (h - _fontSize) * 0.5f);
             if (st.ShowPercent)

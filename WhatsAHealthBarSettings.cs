@@ -44,6 +44,9 @@ public sealed class WhatsAHealthBarSettings : ISettings
     [Menu("You")]
     public KindSettings Self { get; set; } = KindSettings.Make(false, 96, 10, Color.FromArgb(255, 64, 200, 140), 0, false);
 
+    [Menu("Motion")]
+    public MotionSettings Motion { get; set; } = new();
+
     [Menu("Bridge")]
     public BridgeSettings Bridge { get; set; } = new();
 
@@ -208,6 +211,19 @@ public sealed class KindSettings
         Segments = new RangeNode<int>(segments, 0, 20),
         ShowPercent = new ToggleNode(percent),
     };
+}
+
+[Submenu(CollapsedByDefault = true)]
+public sealed class MotionSettings
+{
+    [Menu("Smooth motion", "The overlay runs on its own clock, so some HUD frames see the same game frame twice and others skip " +
+                           "one: bars stutter. On: each bar is drawn between the last two game frames, evenly spaced, at a " +
+                           "constant lag of about one game frame (the state's motion.lagMs)")]
+    public ToggleNode Interpolate { get; set; } = new(true);
+
+    [Menu("Sub-pixel", "Moving bars are drawn at fractional positions (blended into the next pixel) instead of jumping a whole " +
+                       "pixel at a time; bars at rest snap to whole pixels so they stay crisp and don't flicker between two")]
+    public ToggleNode SubPixel { get; set; } = new(true);
 }
 
 [Submenu(CollapsedByDefault = true)]
