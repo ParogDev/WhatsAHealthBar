@@ -13,9 +13,10 @@ namespace WhatsAHealthBar;
 /// 500 bars. Edges are whole pixels; rounded corners are pixel steps (crisper than ImGui's anti-aliased arcs at bar sizes).
 /// Text (percent, preview labels) is queued and drawn after the quads, on top.
 ///
-/// Pools (stacked): the bar is as wide as life + ES + ward. Each pool fills its current share in its own color, laid out in
-/// the order damage removes them: life from the left, then ES, then ward, so the bar drains right to left the way the
-/// monster does. A notch marks the end of the life share. Mostly-ES monsters read as a mostly-ES bar with a life stub.
+/// Pools are independent (life, ES, ward each fill, drain and regenerate on their own, with their own trail and glow):
+/// side by side, each owns a region sized by its max share in damage order (life, ES, ward) with dividers; layered, life
+/// fills the bar and ES / ward are full-width strips along its top / bottom. The sum of the pools shows as a thin total
+/// line under the bar and as the percent.
 /// </summary>
 public sealed class BarRenderer
 {
@@ -27,19 +28,24 @@ public sealed class BarRenderer
     private float _gloss, _shading;
     private int _rounding, _outlineW, _cull, _pulse;
     private float _scale;
-    private bool _esStrip, _lifeNotch;
+    private bool _dividers;
+    private BarKind _totalUpTo; // the total line shows for kinds up to this one (Unique..), or none when Off
+    private bool _totalOn;
 
     private Quad[] _quads = new Quad[4096];
     private int _quadCount;
     private TextItem[] _texts = new TextItem[256];
     private int _textCount;
     private float _fontSize = 13;
+    private readonly System.Collections.Generic.Dictionary<string, float> _labelWidths = new();
+    private float _labelFontSize;
 
-    /// <summary>Pools are stacked into one bar (life + ES + ward); otherwise the bar is life only.</summary>
-    public bool Stacked { get; private set; }
+    /// <summary>Pool layout: side by side (regions by max share), layered (full-width strips), or life only.</summary>
+    public bool SideBySide { get; private set; } = true;
+    public bool Layered { get; private set; }
 
-    /// <summary>ES is read per frame (stacked, or drawn as a strip).</summary>
-    public bool WantsEs => Stacked || _esStrip;
+    /// <summary>ES and ward are read per frame (not in Life only).</summary>
+    public bool WantsPools => SideBySide || Layered;
 
     /// <summary>Quads written by the last Flush (for the state's counters).</summary>
     public int LastQuads { get; private set; }
@@ -84,9 +90,12 @@ public sealed class BarRenderer
         _cull = look.CullPercent.Value;
         _pulse = s.Animation.Enabled ? s.Animation.LowLifePulse.Value : 0;
         var pools = look.Pools.Value;
-        Stacked = pools == Bars.Stacked;
-        _esStrip = pools == Bars.EsStrip;
-        _lifeNotch = look.LifeNotch.Value;
+        Layered = pools == Bars.Layered;
+        SideBySide = !Layered && pools != Bars.LifeOnly; // anything else (an old saved value) is the default
+        _dividers = look.PoolDividers.Value;
+        var total = look.TotalLine.Value;
+        _totalOn = total is Bars.TotalAll or Bars.TotalRareUnique;
+        _totalUpTo = total == Bars.TotalAll ? BarKind.Self : BarKind.Rare;
         Set(BarKind.Unique, s.Unique); Set(BarKind.Rare, s.Rare); Set(BarKind.Magic, s.Magic); Set(BarKind.Normal, s.Normal);
         Set(BarKind.Minion, s.Minion); Set(BarKind.Player, s.Player); Set(BarKind.Self, s.Self);
     }
@@ -96,6 +105,9 @@ public sealed class BarRenderer
         Show = k.Show, ShowPercent = k.ShowPercent, W = k.Width.Value * _scale, H = k.Height.Value * _scale,
         Life = Pack(k.LifeColor.Value), Segments = k.Segments.Value,
     };
+
+    /// <summary>A frame with nothing to draw.</summary>
+    public void Idle() => LastQuads = 0;
 
     /// <summary>Starts a frame's batch (Render, main thread).</summary>
     public void Begin()
@@ -110,8 +122,7 @@ public sealed class BarRenderer
     {
         var st = Styles[(int)b.Kind];
         var a = b.Alpha;
-        var maxTotal = b.MaxTotal(Stacked);
-        if (a <= 0.004f || maxTotal <= 0) return;
+        if (a <= 0.004f || b.MaxTotal <= 0) return;
 
         var w = MathF.Round(st.W);
         var h = MathF.Max(2, MathF.Round(st.H));
@@ -124,58 +135,53 @@ public sealed class BarRenderer
         if (_outlineW > 0) Round(x0 - _outlineW, y0 - _outlineW, x1 + _outlineW, y1 + _outlineW, Mul(_outline, a), r > 0 ? r + _outlineW : 0, true, true);
         Round(x0, y0, x1, y1, Mul(_bg, a), r, true, true);
 
-        var xf = MathF.Round(x0 + w * b.Shown);
-        var xt = MathF.Round(x0 + w * b.Trail);
-        if (xt > xf) Round(xf, y0, xt, y1, Mul(_trail, a), r, xf <= x0, xt >= x1);
-
-        if (xf > x0)
+        var life = st.Life; var es = _es; var ward = _ward;
+        if (_pulse > 0 && b.Kind <= BarKind.Rare && !b.Dying && b.MaxHp > 0 && b.Shown[Bar.Life] * 100 < _pulse)
         {
-            var life = st.Life; var es = _es; var ward = _ward;
-            if (_pulse > 0 && b.Kind <= BarKind.Rare && b.Shown * 100 < _pulse && !b.Dying)
-            {
-                var k = 0.35f * (0.5f + 0.5f * MathF.Sin((float)(now * 9.0)));
-                life = Lerp(life, 0xFFFFFFFF, k); es = Lerp(es, 0xFFFFFFFF, k); ward = Lerp(ward, 0xFFFFFFFF, k);
-            }
+            var k = 0.35f * (0.5f + 0.5f * MathF.Sin((float)(now * 9.0)));
+            life = Lerp(life, 0xFFFFFFFF, k);
+        }
 
-            // Pool boundaries from the current values, clipped to the animated fill; the last non-empty pool reaches the
-            // fill's edge so rounding never leaves a gap.
-            var px = w / maxTotal;
-            var lifeEnd = xf;
-            var esEnd = xf;
-            if (Stacked)
+        // Life's region (for the culling marker): the whole bar unless side by side.
+        float lifeX0 = x0, lifeX1 = x1;
+        if (SideBySide)
+        {
+            // Each pool owns a region sized by its max share, in damage order: life, ES, ward.
+            var px = w / b.MaxTotal;
+            var cursor = x0;
+            var first = true;
+            for (var p = 0; p < Bar.PoolCount; p++)
             {
-                lifeEnd = b.Es <= 0 && b.Ward <= 0 ? xf : MathF.Round(x0 + b.Hp * px);
-                esEnd = b.Ward <= 0 ? xf : MathF.Round(lifeEnd + b.Es * px);
+                if (b.Max[p] <= 0) continue;
+                var rx0 = MathF.Round(cursor);
+                cursor += b.Max[p] * px;
+                var rx1 = MathF.Round(cursor);
+                if (rx1 >= x1 - 0.5f) rx1 = x1;
+                if (p == Bar.Life) { lifeX0 = rx0; lifeX1 = rx1; }
+                Pool(b, p, rx0, rx1, y0, y1, p == Bar.Life ? life : p == Bar.Es ? es : ward, a, r, rx0 <= x0, rx1 >= x1);
+                if (!first && _dividers) Rect(rx0, y0, rx0 + 1, y1, Mul(0xFF000000, a * 0.85f));
+                first = false;
             }
-            Seg(x0, MathF.Min(lifeEnd, xf), y0, y1, Mul(life, a), r, x0, x1);
-            if (Stacked)
+        }
+        else
+        {
+            Pool(b, Bar.Life, x0, x1, y0, y1, life, a, r, true, true);
+            if (Layered)
             {
-                Seg(MathF.Max(x0, lifeEnd), MathF.Min(esEnd, xf), y0, y1, Mul(es, a), r, x0, x1);
-                Seg(MathF.Max(x0, esEnd), xf, y0, y1, Mul(ward, a), r, x0, x1);
+                // ES along the top, ward along the bottom, each full width and independent.
+                var sh = MathF.Max(2, MathF.Round(h * 0.34f));
+                if (b.Max[Bar.Es] > 0) Pool(b, Bar.Es, x0, x1, y0, y0 + sh, es, a, 0, false, false);
+                if (b.Max[Bar.Ward] > 0) Pool(b, Bar.Ward, x0, x1, y1 - sh, y1, ward, a, 0, false, false);
             }
+        }
 
+        // Shading and gloss over the whole bar (a glass tube): dark from mid to bottom, white from top to mid.
+        var inset = r > 0 ? 1 : 0;
+        if (h >= 4)
+        {
             var ym = MathF.Round(y0 + h * 0.5f);
-            var inset = r > 0 ? 1 : 0;
-            // Shading: nothing at mid height to dark at the bottom; gloss: white at the top to nothing at mid. Pool-neutral.
-            if (h >= 4 && xf - x0 > 2 * inset)
-            {
-                if (_shading > 0) Grad(x0 + inset, ym, xf - inset, y1 - inset, 0, Mul(0xFF000000, a * _shading));
-                if (_gloss > 0) Grad(x0 + inset, y0, xf - inset, ym, Mul(0xFFFFFFFF, a * _gloss), 0);
-            }
-            if (b.Glow > 0) Round(x0, y0, xf, y1, Mul(_heal, a * b.Glow * 0.7f), r, true, xf >= x1);
-            if (b.Flash > 0) Rect(xf - 2, y0, xf + 1, y1, Mul(0xFFFFFFFF, a * b.Flash));
-        }
-
-        if (Stacked && _lifeNotch && b.MaxHp < maxTotal)
-        {
-            var x = MathF.Round(x0 + w * b.MaxHp / maxTotal);
-            Rect(x, y0, x + 1, y1, Mul(0xFF000000, a * 0.85f));
-        }
-
-        if (_esStrip && b.MaxEs > 0 && b.Es > 0)
-        {
-            var esh = MathF.Max(2, MathF.Round(h * 0.34f));
-            Round(x0, y0, MathF.Round(x0 + w * Math.Clamp(b.Es / (float)b.MaxEs, 0, 1)), y0 + esh, Mul(_es, a), r, true, false);
+            if (_shading > 0) Grad(x0 + inset, ym, x1 - inset, y1 - inset, 0, Mul(0xFF000000, a * _shading));
+            if (_gloss > 0) Grad(x0 + inset, y0, x1 - inset, ym, Mul(0xFFFFFFFF, a * _gloss), 0);
         }
 
         if (st.Segments > 1)
@@ -188,10 +194,19 @@ public sealed class BarRenderer
             }
         }
 
-        if (_cull > 0 && b.Kind <= BarKind.Normal)
+        if (_cull > 0 && b.Kind <= BarKind.Normal && b.MaxHp > 0)
         {
-            var x = MathF.Round(x0 + w * _cull / 100f);
+            var x = MathF.Round(lifeX0 + (lifeX1 - lifeX0) * _cull / 100f);
             Rect(x, y0 - 1, x + 1, y1 + 1, Mul(0xFFFFFFFF, a * 0.9f));
+        }
+
+        // The sum: life + ES + ward over their maxima, as a thin line under the bar.
+        var below = y1 + _outlineW;
+        if (_totalOn && b.Kind <= _totalUpTo && (b.Max[Bar.Es] > 0 || b.Max[Bar.Ward] > 0))
+        {
+            var th = MathF.Max(2, MathF.Round(2 * _scale));
+            Rect(x0, below + 1, x1, below + 1 + th, Mul(_bg, a));
+            Rect(x0, below + 1, MathF.Round(x0 + w * b.TotalFraction), below + 1 + th, Mul(_text, a * 0.9f));
         }
 
         if (st.ShowPercent || label != null)
@@ -199,14 +214,34 @@ public sealed class BarRenderer
             var ty = MathF.Round(y0 + (h - _fontSize) * 0.5f);
             if (st.ShowPercent)
             {
-                var pct = Percent[(int)MathF.Ceiling(b.Fraction(Stacked) * 100)];
+                var pct = Percent[(int)MathF.Ceiling(b.TotalFraction * 100)];
                 var tp = new Vector2(x1 + 4 + _outlineW, ty);
                 Text(tp + Vector2.One, Mul(0xFF000000, a * 0.8f), pct);
                 Text(tp, Mul(_text, a), pct);
             }
-            if (label != null)
-                Text(new Vector2(MathF.Round(x0 - ImGui.CalcTextSize(label).X - 8 - _outlineW), ty), Mul(_text, a), label);
+            if (label != null) Text(new Vector2(MathF.Round(x0 - LabelWidth(label) - 8 - _outlineW), ty), Mul(_text, a), label);
         }
+    }
+
+    /// <summary>One pool in its region: trail chip, fill, regen glow, hit flash, from that pool's own animation.</summary>
+    private void Pool(Bar b, int p, float rx0, float rx1, float ry0, float ry1, uint col, float a, int r, bool roundLeft, bool roundRight)
+    {
+        var rw = rx1 - rx0;
+        var xf = MathF.Round(rx0 + rw * b.Shown[p]);
+        var xt = MathF.Round(rx0 + rw * b.Trail[p]);
+        if (xt > xf) Round(xf, ry0, xt, ry1, Mul(_trail, a), r, roundLeft && xf <= rx0, roundRight && xt >= rx1);
+        if (xf <= rx0) return;
+        var right = roundRight && xf >= rx1;
+        Round(rx0, ry0, xf, ry1, Mul(col, a), r, roundLeft, right);
+        if (b.Glow[p] > 0) Round(rx0, ry0, xf, ry1, Mul(_heal, a * b.Glow[p] * 0.7f), r, roundLeft, right);
+        if (b.Flash[p] > 0) Rect(MathF.Max(rx0, xf - 2), ry0, MathF.Min(rx1, xf + 1), ry1, Mul(0xFFFFFFFF, a * b.Flash[p]));
+    }
+
+    private float LabelWidth(string label)
+    {
+        if (_labelFontSize != _fontSize) { _labelWidths.Clear(); _labelFontSize = _fontSize; }
+        if (!_labelWidths.TryGetValue(label, out var w)) _labelWidths[label] = w = ImGui.CalcTextSize(label).X;
+        return w;
     }
 
     /// <summary>"batched", or "fallback: why" when the draw list's layout check failed (then each quad is an ImGui call).</summary>
@@ -236,6 +271,11 @@ public sealed class BarRenderer
                 Fallback(dl, "the draw list's _IdxWritePtr is not 3 pointers after _Data (ImGui layout changed)");
             else if (vtxWrite != vb.Data + vb.Size * VertBytes)
                 Fallback(dl, "the draw list's _VtxWritePtr is not at the end of VtxBuffer (ImGui layout changed)");
+            else if ((ImGui.GetIO().BackendFlags & ImGuiBackendFlags.RendererHasVtxOffset) == 0 &&
+                     dl._VtxCurrentIdx + (long)_quadCount * 4 > ushort.MaxValue)
+                // Without VtxOffset the renderer can't start a new 16-bit index range: ImGui's own calls would wrap the
+                // indices too. Draw what fits and say so.
+                Fallback(dl, $"{_quadCount * 4} vertices would pass the 16-bit index limit and the renderer has no VtxOffset support");
             else
             {
                 Path = "batched";

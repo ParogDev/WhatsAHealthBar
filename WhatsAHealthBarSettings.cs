@@ -52,10 +52,11 @@ public sealed class WhatsAHealthBarSettings : ISettings
     public ButtonNode Preview { get; set; } = new();
 }
 
-/// <summary>The Pools choices.</summary>
+/// <summary>The Pools and Total line choices.</summary>
 public static class Bars
 {
-    public const string Stacked = "Stacked", LifeOnly = "Life only", EsStrip = "ES strip";
+    public const string SideBySide = "Side by side", Layered = "Layered", LifeOnly = "Life only";
+    public const string TotalOff = "Off", TotalRareUnique = "Rares and uniques", TotalAll = "All";
 }
 
 [Submenu(CollapsedByDefault = true)]
@@ -141,10 +142,14 @@ public sealed class LookSettings
     [Menu("Heal glow")]
     public ColorNode HealColor { get; set; } = Color.FromArgb(220, 150, 255, 170);
 
-    [Menu("Pools", "Stacked: one bar as wide as life + energy shield + ward, each pool its share in its own color, laid out in the " +
-                   "order damage takes them (life, then ES, then ward on the right), with a notch at the end of the life share. " +
-                   "Life only: ES and ward are not shown. ES strip: the bar is life, ES a thin strip over its top")]
-    public ListNode Pools { get; set; } = new() { Values = new() { Bars.Stacked, Bars.LifeOnly, Bars.EsStrip }, Value = Bars.Stacked };
+    [Menu("Pools", "Life, energy shield and ward each fill and drain on their own (ES recharges while life stays low, ward restores " +
+                   "on its timer). Side by side: each pool owns a region sized by its max share (life, ES, ward), with dividers. " +
+                   "Layered: life fills the whole bar, ES a strip along the top and ward along the bottom, each full width. " +
+                   "Life only: ES and ward are not shown")]
+    public ListNode Pools { get; set; } = new() { Values = new() { Bars.SideBySide, Bars.Layered, Bars.LifeOnly }, Value = Bars.SideBySide };
+
+    [Menu("Total line", "A thin line under the bar showing life + ES + ward together, as a share of their sum")]
+    public ListNode TotalLine { get; set; } = new() { Values = new() { Bars.TotalOff, Bars.TotalRareUnique, Bars.TotalAll }, Value = Bars.TotalRareUnique };
 
     [Menu("Energy shield")]
     public ColorNode EsColor { get; set; } = Color.FromArgb(245, 176, 226, 255);
@@ -152,8 +157,8 @@ public sealed class LookSettings
     [Menu("Ward")]
     public ColorNode WardColor { get; set; } = Color.FromArgb(245, 176, 132, 255);
 
-    [Menu("Life notch", "With stacked pools: a notch at the end of the life share, so ES- or ward-heavy monsters show how much is life")]
-    public ToggleNode LifeNotch { get; set; } = new(true);
+    [Menu("Pool dividers", "Side by side: a dark notch between the life, ES and ward regions")]
+    public ToggleNode PoolDividers { get; set; } = new(true);
 
     [Menu("Gloss", "Strength of the shine on the top half of the fill")]
     public RangeNode<float> Gloss { get; set; } = new(0.22f, 0f, 0.6f);
@@ -186,7 +191,7 @@ public sealed class KindSettings
     [Menu("Segments", "Divider notches across the bar (0: none), e.g. 10 = every 10%")]
     public RangeNode<int> Segments { get; set; } = new(0, 0, 20);
 
-    [Menu("Show percent", "How full the bar is, in % (life + ES + ward when pools are stacked)")]
+    [Menu("Show percent", "Life + ES + ward together, as a % of their sum")]
     public ToggleNode ShowPercent { get; set; } = new(false);
 
     public static KindSettings Make(bool show, int width, int height, Color life, int segments, bool percent) => new()

@@ -11,14 +11,20 @@ public enum BarKind : byte { Unique, Rare, Magic, Normal, Minion, Player, Self }
 /// One tracked entity (or a preview sample when <see cref="Entity"/> is null). Components are looked up once and held;
 /// classification (kind, wanted, height, which pools exist) runs at the classify rate, position, pools and animation every
 /// frame for wanted bars only.
+///
+/// Pools are independent: life, energy shield and ward each have their own current/max and their own animation (fill,
+/// trail, hit flash, regen glow), because they move independently in game: ES recharges while life stays low, ward
+/// restores on its own timer, life regenerates or is flasked.
 /// </summary>
 public sealed class Bar
 {
+    public const int Life = 0, Es = 1, Ward = 2, PoolCount = 3;
+
     public Entity? Entity;
     public uint Id;
     /// <summary>Position in the plugin's bar list (swap-remove).</summary>
     public int Index;
-    public Life? Life;
+    public Life? LifeComp;
     public Render? Render;
 
     // Classification (classify rate)
@@ -26,85 +32,102 @@ public sealed class Bar
     public bool Wanted;
     public float TopZ;
 
-    // Frame data. Pools: life, energy shield and ward (current and max); ES and ward are read per frame only when the
-    // monster has them (their max is read at the classify rate).
+    // Frame data. ES and ward current values are read per frame only when the monster has them (their max is read at the
+    // classify rate).
     public Vector3 World;
     public Vector2 Screen;
-    public int Hp, MaxHp, Es, MaxEs, Ward, MaxWard;
+    public readonly int[] Cur = new int[PoolCount];
+    public readonly int[] Max = new int[PoolCount];
     public bool Seen;
+    private int _lastTotal = -1;
 
-    // Animation, as a fraction of the bar's whole width (see Fraction)
-    public float Shown, Trail, Flash, Glow, Alpha;
-    public double TrailHoldUntil;
+    // Animation per pool (fractions of that pool's own max), plus the bar's opacity.
+    public readonly float[] Shown = new float[PoolCount], Trail = new float[PoolCount];
+    public readonly float[] Flash = new float[PoolCount], Glow = new float[PoolCount];
+    private readonly double[] _hold = new double[PoolCount];
+    public float Alpha;
 
     // Death and kill timing
     public bool Dying;
     public double FirstHitAt;
     public bool Published;
 
-    public float LifeFraction => MaxHp > 0 ? Math.Clamp(Hp / (float)MaxHp, 0, 1) : 0;
+    public int Hp => Cur[Life];
+    public int MaxHp => Max[Life];
+    public int MaxTotal => Max[Life] + Max[Es] + Max[Ward];
+    public int Total => Cur[Life] + Cur[Es] + Cur[Ward];
 
-    /// <summary>The bar's width in pool points: life alone, or life + ES + ward when pools are stacked.</summary>
-    public int MaxTotal(bool stacked) => stacked ? MaxHp + MaxEs + MaxWard : MaxHp;
+    public float Fraction(int pool) => Max[pool] > 0 ? Math.Clamp(Cur[pool] / (float)Max[pool], 0, 1) : 0;
 
-    /// <summary>How full the bar is: (life + ES + ward) / their maxima when stacked, else life alone.</summary>
-    public float Fraction(bool stacked)
+    /// <summary>The sum of the pools over the sum of their maxima (what the total line and the percent show).</summary>
+    public float TotalFraction => MaxTotal > 0 ? Math.Clamp(Total / (float)MaxTotal, 0, 1) : 0;
+
+    /// <summary>Notes the first hit (any pool going down) for time to kill; ward or ES building up after spawn is not a hit.</summary>
+    public void TrackHit(double now)
     {
-        var max = MaxTotal(stacked);
-        if (max <= 0) return 0;
-        var cur = stacked ? Hp + Es + Ward : Hp;
-        return Math.Clamp(cur / (float)max, 0, 1);
+        var total = Total;
+        if (FirstHitAt == 0 && _lastTotal >= 0 && total < _lastTotal) FirstHitAt = now;
+        _lastTotal = total;
+    }
+
+    public void Zero()
+    {
+        Array.Clear(Cur);
+        _lastTotal = 0;
     }
 
     /// <summary>
-    /// Moves the animated values toward <paramref name="target"/>. A hit drops the fill at once (crisp) and leaves a trail
-    /// chip that holds, then drains; a heal (or ES recharge) fills smoothly with a glow. Animations off: values jump.
+    /// Moves each pool's animated values toward its current fraction. A drop is instant (crisp) and leaves a trail chip that
+    /// holds, then drains; a rise (regen, recharge, flask, ward restore) fills smoothly with a glow. Animations off: values jump.
     /// </summary>
-    public void Animate(float target, double now, float dt, in AnimParams p)
+    public void Animate(double now, float dt, in AnimParams p)
     {
-        if (!Seen)
+        var first = !Seen;
+        if (first)
         {
             Seen = true;
-            Shown = Trail = target;
             Alpha = p.Enabled && p.FadeRate > 0 ? 0 : 1;
         }
 
-        if (!p.Enabled)
+        var holdEnd = 0.0;
+        for (var i = 0; i < PoolCount; i++)
         {
-            Shown = Trail = target;
-            Flash = Glow = 0;
-            Alpha = Dying ? 0 : 1;
-            return;
+            var target = Dying ? 0 : Fraction(i);
+            if (first || !p.Enabled)
+            {
+                Shown[i] = Trail[i] = target;
+                Flash[i] = Glow[i] = 0;
+                continue;
+            }
+            if (target < Shown[i] - 0.0005f)
+            {
+                if (Trail[i] < Shown[i]) Trail[i] = Shown[i];
+                Shown[i] = target;
+                _hold[i] = now + p.TrailHold;
+                if (p.HitFlash) Flash[i] = 1;
+            }
+            else if (target > Shown[i] + 0.0005f)
+            {
+                Shown[i] += (target - Shown[i]) * Ease(p.HealRate, dt);
+                if (target - Shown[i] < 0.002f) Shown[i] = target;
+                if (p.HealGlow) Glow[i] = 1;
+            }
+            if (!p.Trail) Trail[i] = Shown[i];
+            else if (now >= _hold[i])
+            {
+                Trail[i] += (Shown[i] - Trail[i]) * Ease(p.TrailDrain, dt);
+                if (Trail[i] - Shown[i] < 0.002f) Trail[i] = Shown[i];
+            }
+            if (Trail[i] < Shown[i]) Trail[i] = Shown[i];
+            if (Flash[i] > 0) Flash[i] = MathF.Max(0, Flash[i] - dt * 7f);
+            if (Glow[i] > 0) Glow[i] = MathF.Max(0, Glow[i] - dt * 2.2f);
+            holdEnd = Math.Max(holdEnd, _hold[i]);
         }
 
-        if (target < Shown - 0.0005f)
-        {
-            if (Trail < Shown) Trail = Shown;
-            Shown = target;
-            TrailHoldUntil = now + p.TrailHold;
-            if (p.HitFlash) Flash = 1;
-        }
-        else if (target > Shown + 0.0005f)
-        {
-            Shown += (target - Shown) * Ease(p.HealRate, dt);
-            if (target - Shown < 0.002f) Shown = target;
-            if (p.HealGlow) Glow = 1;
-        }
-
-        if (!p.Trail) Trail = Shown;
-        else if (now >= TrailHoldUntil)
-        {
-            Trail += (Shown - Trail) * Ease(p.TrailDrain, dt);
-            if (Trail - Shown < 0.002f) Trail = Shown;
-        }
-        if (Trail < Shown) Trail = Shown;
-
-        if (Flash > 0) Flash = MathF.Max(0, Flash - dt * 7f);
-        if (Glow > 0) Glow = MathF.Max(0, Glow - dt * 2.2f);
-
+        if (!p.Enabled) { Alpha = Dying ? 0 : 1; return; }
         var fadeTo = Wanted && !Dying ? 1f : 0f;
-        // A dying bar keeps full opacity while its trail drains, then fades.
-        if (Dying && now < TrailHoldUntil + 0.15) fadeTo = 1f;
+        // A dying bar keeps full opacity while its trails drain, then fades.
+        if (Dying && now < holdEnd + 0.15) fadeTo = 1f;
         Alpha = p.FadeRate <= 0 ? fadeTo : MoveTo(Alpha, fadeTo, p.FadeRate * dt);
     }
 

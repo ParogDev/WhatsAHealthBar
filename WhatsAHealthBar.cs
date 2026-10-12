@@ -30,7 +30,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private readonly Dictionary<uint, Bar> _byId = new();
     private readonly List<Bar> _bars = new();
     private readonly List<Bar> _drawList = new(512);
-    private readonly Bar[] _preview = Enumerable.Range(0, 7).Select(i => new Bar { Kind = (BarKind)i, Wanted = true }).ToArray();
+
     private readonly BarRenderer _renderer = new();
     private readonly AiBridgeLink _link = new();
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -38,9 +38,9 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private readonly LinkedList<HealthBarKillDto> _kills = new();
     private readonly Random _rng = new();
     private readonly System.Collections.Concurrent.ConcurrentQueue<(double seconds, string? focus, int stress)> _previewRequests = new();
-    private Bar[] _previewOrder = Array.Empty<Bar>(), _stress = Array.Empty<Bar>();
+    private PoolSim[] _previewSims = Array.Empty<PoolSim>(), _stressSims = Array.Empty<PoolSim>();
 
-    private double _now, _lastFrame, _nextClassify, _nextUiCheck, _nextWindow, _previewUntil, _nextPreviewHit;
+    private double _now, _lastFrame, _nextClassify, _nextUiCheck, _nextWindow, _previewUntil;
     private float _dt, _resolutionScale = 1;
     private Vector2 _window = new(2560, 1440);
     private bool _panelsOpen, _inTown, _inHideout, _active;
@@ -134,8 +134,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     /// <summary>Whether bars are drawn at all right now; <see cref="_suppressed"/> says why not.</summary>
     private bool Evaluate()
     {
-        if (!Settings.Enable) { _suppressed = "disabled"; return false; }
-        // The window first: the preview draws in town and hideout too.
+        // The window first: the preview draws in town, in hideout and while disabled too.
         if (_now >= _nextWindow)
         {
             _nextWindow = _now + 0.5;
@@ -143,6 +142,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             _window = new Vector2(r.Width, r.Height);
             _resolutionScale = r.Height > 0 ? r.Height / 1440f : 1;
         }
+        if (!Settings.Enable) { _suppressed = "disabled"; return false; }
         if (!GameController.InGame || GameController.IngameState?.Camera == null) { _suppressed = "not in game"; return false; }
         if (_inTown && !Settings.Visibility.ShowInTown) { _suppressed = "in town"; return false; }
         if (_inHideout && !Settings.Visibility.ShowInHideout) { _suppressed = "in hideout"; return false; }
@@ -184,10 +184,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 if (b.Seen && !b.Dying) Die(b, publish);
                 continue;
             }
-            b.Life ??= e.GetComponent<Life>();
+            b.LifeComp ??= e.GetComponent<Life>();
             b.Render ??= e.GetComponent<Render>();
-            if (b.Life == null || b.Render == null || e.IsHidden) continue;
-            var life = b.Life;
+            if (b.LifeComp == null || b.Render == null || e.IsHidden) continue;
+            var life = b.LifeComp;
             if (b.Dying)
             {
                 // IsAlive can lag CurHP by a frame: stay dead unless it really came back (a revive).
@@ -197,10 +197,11 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 b.FirstHitAt = 0;
             }
             // Which pools exist (max values, at the classify rate): the frame loop reads ES and ward only when present.
-            b.MaxEs = _renderer.WantsEs ? life.MaxES : 0;
-            b.MaxWard = _renderer.Stacked ? life.Ward.Max : 0;
-            if (b.MaxEs == 0) b.Es = 0;
-            if (b.MaxWard == 0) b.Ward = 0;
+            var pools = _renderer.WantsPools;
+            b.Max[Bar.Es] = pools ? life.MaxES : 0;
+            b.Max[Bar.Ward] = pools ? life.Ward.Max : 0;
+            if (b.Max[Bar.Es] == 0) b.Cur[Bar.Es] = 0;
+            if (b.Max[Bar.Ward] == 0) b.Cur[Bar.Ward] = 0;
 
             b.Kind = e.Type == EntityType.Player
                 ? e.Address == playerAddr ? BarKind.Self : BarKind.Player
@@ -230,7 +231,6 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         var snap = GameController.IngameState.Camera.Snapshot;
         var z = Settings.Visibility.ZOffset.Value;
         var anim = Anim();
-        var stacked = _renderer.Stacked;
         var margin = 64f;
 
         foreach (var b in _bars)
@@ -249,18 +249,18 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             }
             b.Screen = s;
 
-            if (!b.Dying && b.Life != null)
+            if (!b.Dying && b.LifeComp != null)
             {
-                var life = b.Life;
-                b.Hp = life.CurHP;
-                b.MaxHp = life.MaxHP;
-                if (b.MaxEs > 0) b.Es = life.CurES;
-                if (b.MaxWard > 0) b.Ward = life.Ward.Current;
-                if (b.MaxHp <= 0) continue;
-                if (b.FirstHitAt == 0 && b.Seen && b.Hp + b.Es + b.Ward < b.MaxHp + b.MaxEs + b.MaxWard) b.FirstHitAt = _now;
-                if (b.Hp <= 0 && b.Seen) Die(b, Settings.Bridge.PublishKills.Value);
+                var life = b.LifeComp;
+                b.Cur[Bar.Life] = life.CurHP;
+                b.Max[Bar.Life] = life.MaxHP;
+                if (b.Max[Bar.Es] > 0) b.Cur[Bar.Es] = life.CurES;
+                if (b.Max[Bar.Ward] > 0) b.Cur[Bar.Ward] = life.Ward.Current;
+                if (b.MaxTotal <= 0) continue;
+                b.TrackHit(_now);
+                if (b.MaxHp > 0 && b.Hp <= 0 && b.Seen) Die(b, Settings.Bridge.PublishKills.Value);
             }
-            b.Animate(b.Dying ? 0 : b.Fraction(stacked), _now, _dt, anim);
+            b.Animate(_now, _dt, anim);
             if (b.Alpha <= 0.004f) continue;
             _drawList.Add(b);
             _byKind[(int)b.Kind]++;
@@ -280,7 +280,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         b.Dying = true;
         b.Wanted = false;
-        b.Hp = b.Es = b.Ward = 0;
+        var (maxEs, maxWard) = (b.Max[Bar.Es], b.Max[Bar.Ward]);
+        b.Zero();
         if (b.Published || b.Entity == null) return;
         var publishIt = publish switch
         {
@@ -296,8 +297,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             Rarity = b.Kind.ToString(),
             Path = b.Entity.Path,
             MaxLife = b.MaxHp,
-            MaxEs = b.MaxEs,
-            MaxWard = b.MaxWard,
+            MaxEs = maxEs,
+            MaxWard = maxWard,
             TimeToKillMs = b.FirstHitAt > 0 ? (int)((_now - b.FirstHitAt) * 1000) : null,
             Area = _area,
             At = DateTime.UtcNow.ToString("o"),
@@ -320,13 +321,20 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             foreach (var b in _drawList) _renderer.Draw(b, _now);
             if (previewing)
             {
-                foreach (var b in _stress) _renderer.Draw(b, _now);
-                foreach (var b in _previewOrder) _renderer.Draw(b, _now, BarRenderer.KindNames[(int)b.Kind]);
+                foreach (var s in _stressSims) _renderer.Draw(s.Bar, _now);
+                foreach (var s in _previewSims) _renderer.Draw(s.Bar, _now, BarRenderer.KindNames[(int)s.Bar.Kind]);
             }
             var f0 = Stopwatch.GetTimestamp();
             _buildUs += (Stopwatch.GetElapsedTime(t0, f0).TotalMicroseconds - _buildUs) * 0.05;
             _renderer.Flush(ImGui.GetBackgroundDrawList());
             _flushUs += (Stopwatch.GetElapsedTime(f0).TotalMicroseconds - _flushUs) * 0.05;
+        }
+        else
+        {
+            // Nothing drawn: the split decays toward zero instead of showing the last busy frame's numbers.
+            _renderer.Idle();
+            _buildUs *= 0.95;
+            _flushUs *= 0.95;
         }
 
         var us = Stopwatch.GetElapsedTime(t0).TotalMicroseconds;
@@ -352,23 +360,22 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     /// <summary>Main thread only (Tick, the menu button): bridge calls queue through <see cref="_previewRequests"/>.</summary>
     private void StartPreview(double seconds, string? focus, int stress = 0)
     {
-        _previewUntil = _clock.Elapsed.TotalSeconds + Math.Clamp(seconds, 0, 60);
+        var now = _clock.Elapsed.TotalSeconds;
+        _previewUntil = now + Math.Clamp(seconds, 0, 60);
         _previewFocus = focus;
-        foreach (var b in _preview)
-        {
-            var (life, es, ward) = PreviewPools[(int)b.Kind];
-            b.Seen = false; b.Dying = false; b.FirstHitAt = 0;
-            b.Hp = b.MaxHp = life; b.Es = b.MaxEs = es; b.Ward = b.MaxWard = ward;
-        }
         // The focused kind first, then the rest in their natural order.
-        _previewOrder = _preview.OrderBy(b => string.Equals(b.Kind.ToString(), focus, StringComparison.OrdinalIgnoreCase) ? -1 : (int)b.Kind).ToArray();
-        _stress = new Bar[Math.Clamp(stress, 0, 2000)];
-        for (var i = 0; i < _stress.Length; i++)
-        {
-            var kind = (BarKind)(i % 4 == 0 ? i / 4 % 4 : 3); // mostly normals, like a real pack
-            var (life, es, ward) = PreviewPools[(int)kind];
-            _stress[i] = new Bar { Kind = kind, Wanted = true, Hp = life, MaxHp = life, Es = es, MaxEs = es, Ward = ward, MaxWard = ward };
-        }
+        _previewSims = Enum.GetValues<BarKind>()
+            .OrderBy(k => string.Equals(k.ToString(), focus, StringComparison.OrdinalIgnoreCase) ? -1 : (int)k)
+            .Select(k => Sim(k, now)).ToArray();
+        // Stress: rows that fit on screen, mostly normals like a real pack.
+        _stressSims = new PoolSim[Math.Clamp(stress, 0, 2000)];
+        for (var i = 0; i < _stressSims.Length; i++) _stressSims[i] = Sim((BarKind)(i % 4 == 0 ? i / 4 % 4 : 3), now);
+    }
+
+    private PoolSim Sim(BarKind kind, double now)
+    {
+        var (life, es, ward) = PreviewPools[(int)kind];
+        return new PoolSim(new Bar { Kind = kind, Wanted = true }, life, es, ward, now, _rng);
     }
 
     /// <summary>PluginBridge WhatsAHealthBar.Preview (any thread): queued for Tick.</summary>
@@ -399,50 +406,26 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private void UpdatePreview()
     {
         var anim = Anim();
-        var stacked = _renderer.Stacked;
-        var hit = _now >= _nextPreviewHit;
-        if (hit) _nextPreviewHit = _now + 0.7;
         var y = _window.Y * 0.30f;
-        for (var i = 0; i < _previewOrder.Length; i++)
+        for (var i = 0; i < _previewSims.Length; i++)
         {
-            var b = _previewOrder[i];
-            if (hit)
-            {
-                // Damage takes ward, then ES, then life; near empty, everything refills (a heal).
-                var total = b.MaxHp + b.MaxEs + b.MaxWard;
-                if (b.Hp + b.Es + b.Ward <= total * 0.12) { b.Hp = b.MaxHp; b.Es = b.MaxEs; b.Ward = b.MaxWard; }
-                else
-                {
-                    var dmg = (int)(total * (0.06 + _rng.NextDouble() * 0.16));
-                    var w = Math.Min(b.Ward, dmg); b.Ward -= w; dmg -= w;
-                    var e = Math.Min(b.Es, dmg); b.Es -= e; dmg -= e;
-                    b.Hp = Math.Max(1, b.Hp - dmg);
-                }
-            }
-            b.Screen = new Vector2(_window.X * 0.5f, y + i * 34 * _resolutionScale);
-            b.Animate(b.Fraction(stacked), _now, _dt, anim);
+            var sim = _previewSims[i];
+            sim.Step(_now, _dt, _rng);
+            sim.Bar.Screen = new Vector2(_window.X * 0.5f, y + i * 36 * _resolutionScale);
+            sim.Bar.Animate(_now, _dt, anim);
         }
 
-        // Stress: N bars on a grid over the screen, a few hit each frame, to measure the many-bars cost.
-        if (_stress.Length == 0) return;
-        var cols = Math.Max(1, (int)(_window.X / 90));
-        for (var i = 0; i < _stress.Length; i++)
+        // Stress: N bars on a grid, wrapping columns so every bar is on screen and counts honestly in PerBarNs.
+        if (_stressSims.Length == 0) return;
+        var cols = Math.Max(1, (int)((_window.X - 20) / 90));
+        var rows = Math.Max(1, (int)((_window.Y - 60) / 22));
+        for (var i = 0; i < _stressSims.Length; i++)
         {
-            var b = _stress[i];
-            if (_rng.Next(40) == 0)
-            {
-                var total = b.MaxHp + b.MaxEs + b.MaxWard;
-                if (b.Hp + b.Es + b.Ward <= total * 0.15) { b.Hp = b.MaxHp; b.Es = b.MaxEs; b.Ward = b.MaxWard; }
-                else
-                {
-                    var dmg = (int)(total * 0.12);
-                    var w = Math.Min(b.Ward, dmg); b.Ward -= w; dmg -= w;
-                    var e = Math.Min(b.Es, dmg); b.Es -= e; dmg -= e;
-                    b.Hp = Math.Max(1, b.Hp - dmg);
-                }
-            }
-            b.Screen = new Vector2(45 + i % cols * 90, 60 + i / cols * 22);
-            b.Animate(b.Fraction(stacked), _now, _dt, anim);
+            var sim = _stressSims[i];
+            sim.Step(_now, _dt, _rng);
+            var slot = i % (cols * rows); // past one screenful, bars overlap rather than leave the screen
+            sim.Bar.Screen = new Vector2(55 + slot % cols * 90 + i / (cols * rows) * 6, 60 + slot / cols * 22);
+            sim.Bar.Animate(_now, _dt, anim);
         }
     }
 
@@ -451,7 +434,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private string GetStateJson()
     {
         var previewing = _now < _previewUntil;
-        var previewBars = previewing ? _previewOrder.Length + _stress.Length : 0;
+        var previewBars = previewing ? _previewSims.Length + _stressSims.Length : 0;
         var barsNow = _drawList.Count + previewBars;
         var state = new HealthBarStateDto
         {
