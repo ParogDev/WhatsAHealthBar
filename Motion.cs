@@ -97,12 +97,14 @@ public sealed class Motion
             b.Shown2 = b.Shown1; b.Shown1 = shown;
             b.Screen = shown;
         }
-        if (moving > 0)
+        if (moving > 0 && float.IsFinite(rawSum) && float.IsFinite(shownSum))
         {
             JitterRaw += (rawSum / moving - JitterRaw) * 0.05f;
             JitterShown += (shownSum / moving - JitterShown) * 0.05f;
         }
     }
 
-    private static float Frac(double t, double a, double b) => b > a ? (float)Math.Clamp((t - a) / (b - a), 0, 1) : 1;
+    /// <summary>Where t falls between a and b, 0-1; 1 (the newer sample) when either is unset (fewer than three advances seen).</summary>
+    private static float Frac(double t, double a, double b) =>
+        double.IsFinite(a) && double.IsFinite(b) && b > a ? (float)Math.Clamp((t - a) / (b - a), 0, 1) : 1;
 }
