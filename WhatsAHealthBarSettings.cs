@@ -83,6 +83,11 @@ public sealed class VisibilitySettings
     [Menu("Height offset", "Moves every bar up (negative) or down, in world units")]
     public RangeNode<int> ZOffset { get; set; } = new(0, -300, 300);
 
+    [Menu("Sit on the game's bar", "Place each bar exactly where the game draws its own life bar: the game anchors it at the same " +
+                                   "model top this plugin projects, then shifts it 2.3 px left and 4.5 px up (measured at 1080p on " +
+                                   "9 monsters of 4 types; scaled with the window height). Off: the bar sits on the model top")]
+    public ToggleNode AlignToGameBar { get; set; } = new(true);
+
     [Menu("Classify rate (Hz)", "How often each monster's kind, hostility and distance are rechecked. Positions and life update every frame")]
     public RangeNode<int> ClassifyHz { get; set; } = new(10, 2, 30);
 }

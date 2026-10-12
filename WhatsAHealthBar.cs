@@ -235,6 +235,9 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         var snap = GameController.IngameState.Camera.Snapshot;
         var z = Settings.Visibility.ZOffset.Value;
+        // The game's own bar: the same model-top projection, then a fixed screen offset (bar centre 2.3 px left, bottom
+        // 4.5 px up at 1080p). No memory anchor exists for it (it is drawn with the 3D scene), so this is the 1:1 match.
+        var align = Settings.Visibility.AlignToGameBar.Value ? new Vector2(-2.3f, -4.5f) * (_window.Y / 1080f) : Vector2.Zero;
         var anim = Anim();
         var margin = 64f;
 
@@ -252,7 +255,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 if (!b.Wanted) b.Alpha = 0;
                 continue;
             }
-            b.Screen = s;
+            b.Screen = s + align;
 
             if (!b.Dying && b.LifeComp != null)
             {
