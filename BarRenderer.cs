@@ -14,8 +14,9 @@ namespace WhatsAHealthBar;
 /// Text (percent, preview labels) is queued and drawn after the quads, on top.
 ///
 /// Pools are independent (life, ES, ward each fill, drain and regenerate on their own, with their own trail and glow):
-/// side by side, each owns a region sized by its max share in damage order (life, ES, ward) with dividers; layered, life
-/// fills the bar and ES / ward are full-width strips along its top / bottom. The sum of the pools shows as a thin total
+/// sandwich (default), they are layers stacked top to bottom (ward, ES, life), each as thick as its share of the combined
+/// max so together they always fill the bar, each filling left to right by its own value; side by side, each owns a region
+/// of the width by its max share. The sum of the pools shows as a thin total
 /// line under the bar and as the percent.
 /// </summary>
 public sealed class BarRenderer
@@ -41,11 +42,11 @@ public sealed class BarRenderer
     private float _labelFontSize;
 
     /// <summary>Pool layout: side by side (regions by max share), layered (full-width strips), or life only.</summary>
-    public bool SideBySide { get; private set; } = true;
-    public bool Layered { get; private set; }
+    public bool Sandwich { get; private set; } = true;
+    public bool SideBySide { get; private set; }
 
     /// <summary>ES and ward are read per frame (not in Life only).</summary>
-    public bool WantsPools => SideBySide || Layered;
+    public bool WantsPools => Sandwich || SideBySide;
 
     /// <summary>Quads written by the last Flush (for the state's counters).</summary>
     public int LastQuads { get; private set; }
@@ -90,8 +91,8 @@ public sealed class BarRenderer
         _cull = look.CullPercent.Value;
         _pulse = s.Animation.Enabled ? s.Animation.LowLifePulse.Value : 0;
         var pools = look.Pools.Value;
-        Layered = pools == Bars.Layered;
-        SideBySide = !Layered && pools != Bars.LifeOnly; // anything else (an old saved value) is the default
+        SideBySide = pools == Bars.SideBySide;
+        Sandwich = !SideBySide && pools != Bars.LifeOnly; // anything else (an old saved value) is the default
         _dividers = look.PoolDividers.Value;
         var total = look.TotalLine.Value;
         _totalOn = total is Bars.TotalAll or Bars.TotalRareUnique;
@@ -163,17 +164,24 @@ public sealed class BarRenderer
                 first = false;
             }
         }
-        else
+        else if (Sandwich)
         {
-            Pool(b, Bar.Life, x0, x1, y0, y1, life, a, r, true, true);
-            if (Layered)
+            // Layers top to bottom in damage order (ward, ES, life); their thicknesses are the pools' shares of the combined
+            // max, so together they always fill the bar's whole height. Each layer fills left to right by its own cur/max.
+            var layers = Layers(b, (int)h);
+            var ly = y0;
+            int top = -1, bottom = -1;
+            for (var p = Bar.PoolCount - 1; p >= 0; p--)
+                if (layers[p] > 0) { if (top < 0) top = p; bottom = p; }
+            for (var p = Bar.PoolCount - 1; p >= 0; p--)
             {
-                // ES along the top, ward along the bottom, each full width and independent.
-                var sh = MathF.Max(2, MathF.Round(h * 0.34f));
-                if (b.Max[Bar.Es] > 0) Pool(b, Bar.Es, x0, x1, y0, y0 + sh, es, a, 0, false, false);
-                if (b.Max[Bar.Ward] > 0) Pool(b, Bar.Ward, x0, x1, y1 - sh, y1, ward, a, 0, false, false);
+                if (layers[p] <= 0) continue;
+                var ly1 = ly + layers[p];
+                Layer(b, p, x0, x1, ly, ly1, p == Bar.Life ? life : p == Bar.Es ? es : ward, a, r > 0, p == top, p == bottom);
+                ly = ly1;
             }
         }
+        else Pool(b, Bar.Life, x0, x1, y0, y1, life, a, r, true, true);
 
         // Shading and gloss over the whole bar (a glass tube): dark from mid to bottom, white from top to mid.
         var inset = r > 0 ? 1 : 0;
@@ -235,6 +243,70 @@ public sealed class BarRenderer
         Round(rx0, ry0, xf, ry1, Mul(col, a), r, roundLeft, right);
         if (b.Glow[p] > 0) Round(rx0, ry0, xf, ry1, Mul(_heal, a * b.Glow[p] * 0.7f), r, roundLeft, right);
         if (b.Flash[p] > 0) Rect(MathF.Max(rx0, xf - 2), ry0, MathF.Min(rx1, xf + 1), ry1, Mul(0xFFFFFFFF, a * b.Flash[p]));
+    }
+
+    private readonly int[] _layers = new int[Bar.PoolCount];
+
+    /// <summary>
+    /// Pixel thickness of each pool's layer: proportional to its max, summing exactly to the bar height (largest remainder),
+    /// at least 2 px for any pool present when the bar is tall enough, so a small ES or ward share stays visible.
+    /// </summary>
+    private int[] Layers(Bar b, int h)
+    {
+        Array.Clear(_layers);
+        var total = b.MaxTotal;
+        var present = 0;
+        for (var p = 0; p < Bar.PoolCount; p++) if (b.Max[p] > 0) present++;
+        var min = h >= present * 2 ? 2 : h >= present ? 1 : 0;
+        var free = h - min * present;
+        var used = 0;
+        Span<float> rem = stackalloc float[Bar.PoolCount];
+        for (var p = 0; p < Bar.PoolCount; p++)
+        {
+            if (b.Max[p] <= 0) continue;
+            var exact = free * (float)b.Max[p] / total;
+            _layers[p] = min + (int)exact;
+            rem[p] = exact - (int)exact;
+            used += _layers[p];
+        }
+        while (used < h)
+        {
+            var best = -1;
+            for (var p = 0; p < Bar.PoolCount; p++)
+                if (b.Max[p] > 0 && (best < 0 || rem[p] > rem[best])) best = p;
+            if (best < 0) break;
+            _layers[best]++;
+            rem[best] = -1;
+            used++;
+        }
+        return _layers;
+    }
+
+    /// <summary>
+    /// One sandwich layer: trail chip, fill, glow, flash from the pool's own animation. With rounding on, the bar's outer
+    /// corners stay cut by one pixel (the top layer's top corners, the bottom layer's bottom corners).
+    /// </summary>
+    private void Layer(Bar b, int p, float x0, float x1, float ly0, float ly1, uint col, float a, bool cut, bool isTop, bool isBottom)
+    {
+        var w = x1 - x0;
+        var xf = MathF.Round(x0 + w * b.Shown[p]);
+        var xt = MathF.Round(x0 + w * b.Trail[p]);
+        float t = cut && isTop ? 1 : 0, bt = cut && isBottom ? 1 : 0;
+        if (xt > xf) CutRect(xf, ly0, xt, ly1, Mul(_trail, a), x0, x1, t, bt);
+        if (xf <= x0) return;
+        CutRect(x0, ly0, xf, ly1, Mul(col, a), x0, x1, t, bt);
+        if (b.Glow[p] > 0) CutRect(x0, ly0, xf, ly1, Mul(_heal, a * b.Glow[p] * 0.7f), x0, x1, t, bt);
+        if (b.Flash[p] > 0) Rect(MathF.Max(x0, xf - 2), ly0, MathF.Min(x1, xf + 1), ly1, Mul(0xFFFFFFFF, a * b.Flash[p]));
+    }
+
+    /// <summary>A rect whose 1-px end columns, where they touch the bar's ends, are shortened by the corner cut.</summary>
+    private void CutRect(float rx0, float ry0, float rx1, float ry1, uint col, float x0, float x1, float cutTop, float cutBottom)
+    {
+        if (cutTop == 0 && cutBottom == 0) { Rect(rx0, ry0, rx1, ry1, col); return; }
+        var left = rx0 <= x0; var right = rx1 >= x1;
+        Rect(left ? rx0 + 1 : rx0, ry0, right ? rx1 - 1 : rx1, ry1, col);
+        if (left) Rect(rx0, ry0 + cutTop, rx0 + 1, ry1 - cutBottom, col);
+        if (right && rx1 - 1 > rx0) Rect(rx1 - 1, ry0 + cutTop, rx1, ry1 - cutBottom, col);
     }
 
     private float LabelWidth(string label)

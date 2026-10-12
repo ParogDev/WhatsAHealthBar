@@ -24,13 +24,13 @@ public sealed class WhatsAHealthBarSettings : ISettings
     public LookSettings Look { get; set; } = new();
 
     [Menu("Unique enemies")]
-    public KindSettings Unique { get; set; } = KindSettings.Make(true, 150, 13, Color.FromArgb(255, 232, 120, 36), 10, true);
+    public KindSettings Unique { get; set; } = KindSettings.Make(true, 150, 16, Color.FromArgb(255, 232, 120, 36), 10, true);
 
     [Menu("Rare enemies")]
-    public KindSettings Rare { get; set; } = KindSettings.Make(true, 118, 11, Color.FromArgb(255, 226, 196, 52), 4, true);
+    public KindSettings Rare { get; set; } = KindSettings.Make(true, 118, 14, Color.FromArgb(255, 226, 196, 52), 4, true);
 
     [Menu("Magic enemies")]
-    public KindSettings Magic { get; set; } = KindSettings.Make(true, 86, 8, Color.FromArgb(255, 92, 132, 255), 0, false);
+    public KindSettings Magic { get; set; } = KindSettings.Make(true, 86, 10, Color.FromArgb(255, 92, 132, 255), 0, false);
 
     [Menu("Normal enemies")]
     public KindSettings Normal { get; set; } = KindSettings.Make(true, 68, 6, Color.FromArgb(255, 214, 58, 52), 0, false);
@@ -39,10 +39,10 @@ public sealed class WhatsAHealthBarSettings : ISettings
     public KindSettings Minion { get; set; } = KindSettings.Make(true, 56, 5, Color.FromArgb(255, 72, 196, 110), 0, false);
 
     [Menu("Other players")]
-    public KindSettings Player { get; set; } = KindSettings.Make(true, 96, 8, Color.FromArgb(255, 64, 200, 140), 0, false);
+    public KindSettings Player { get; set; } = KindSettings.Make(true, 96, 10, Color.FromArgb(255, 64, 200, 140), 0, false);
 
     [Menu("You")]
-    public KindSettings Self { get; set; } = KindSettings.Make(false, 96, 8, Color.FromArgb(255, 64, 200, 140), 0, false);
+    public KindSettings Self { get; set; } = KindSettings.Make(false, 96, 10, Color.FromArgb(255, 64, 200, 140), 0, false);
 
     [Menu("Bridge")]
     public BridgeSettings Bridge { get; set; } = new();
@@ -55,7 +55,7 @@ public sealed class WhatsAHealthBarSettings : ISettings
 /// <summary>The Pools and Total line choices.</summary>
 public static class Bars
 {
-    public const string SideBySide = "Side by side", Layered = "Layered", LifeOnly = "Life only";
+    public const string Sandwich = "Sandwich", SideBySide = "Side by side", LifeOnly = "Life only";
     public const string TotalOff = "Off", TotalRareUnique = "Rares and uniques", TotalAll = "All";
 }
 
@@ -143,10 +143,10 @@ public sealed class LookSettings
     public ColorNode HealColor { get; set; } = Color.FromArgb(220, 150, 255, 170);
 
     [Menu("Pools", "Life, energy shield and ward each fill and drain on their own (ES recharges while life stays low, ward restores " +
-                   "on its timer). Side by side: each pool owns a region sized by its max share (life, ES, ward), with dividers. " +
-                   "Layered: life fills the whole bar, ES a strip along the top and ward along the bottom, each full width. " +
-                   "Life only: ES and ward are not shown")]
-    public ListNode Pools { get; set; } = new() { Values = new() { Bars.SideBySide, Bars.Layered, Bars.LifeOnly }, Value = Bars.SideBySide };
+                   "on its timer). Sandwich: the pools are layers stacked top to bottom (ward, ES, life), each as thick as its share " +
+                   "of the combined max, so together they are always the whole bar; each layer fills left to right by its own value. " +
+                   "Side by side: each pool owns a region of the width by its max share, with dividers. Life only: ES and ward hidden")]
+    public ListNode Pools { get; set; } = new() { Values = new() { Bars.Sandwich, Bars.SideBySide, Bars.LifeOnly }, Value = Bars.Sandwich };
 
     [Menu("Total line", "A thin line under the bar showing life + ES + ward together, as a share of their sum")]
     public ListNode TotalLine { get; set; } = new() { Values = new() { Bars.TotalOff, Bars.TotalRareUnique, Bars.TotalAll }, Value = Bars.TotalRareUnique };
