@@ -940,7 +940,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         var dto = new WhyEntityDto
         {
             Id = b.Id,
-            Path = b.PathKey.Length > 0 ? b.PathKey : e?.Path,
+            Path = b.PathKey.Length > 0 ? b.PathKey : CompiledLayers.PathKey(e?.Path),
             Name = b.DisplayName.Length > 0 ? b.DisplayName : null,
             Kind = b.Kind.ToString(),
             Drawn = b.Why == Why.Drawn && _drawList.Contains(b),

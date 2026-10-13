@@ -9,8 +9,18 @@ Crisp, animated health bars for the Path of Exile 2 HUD (ExileCore2), built to c
 - **Spawn and death:** bars fade in when a monster appears and out when it dies.
 - **Low life:** rare and unique bars pulse.
 - **Energy shield:** a thin strip across the top of the bar.
-- **Extras:** an optional culling-strike notch.
-- **Preview in game:** draws sample bars mid-screen with fake hits and heals, so you can tune the look in town.
+- **Preview in game:** draws sample bars mid-screen with fake hits and heals, names, status icons, a damage-over-time chunk and an immune sample, so you can tune the look in town.
+
+## Information layers (ported from syrairc's ExileNameplates)
+- **Names and data texts:** per kind, a template above, on and below the bar: `{name} {hp} {hpmax} {hp%} {life} {life%} {es} {es%} {ward} {ward%} {dist} {rarity} {dps} {ttk} {dotloss} {dotdps}`. Names show on rares and uniques by default; long names are abbreviated (`S. S. Captain`). A bar's string is rebuilt only when the values it shows change.
+- **Status icons:** ailments, curses, exposure, armour break and buffs as icons next to the bar (above, below, left or right, in a grid), with stacks and optional seconds left. The list ships with PoE2 buff ids read from the game's own data (several also seen on monsters in combat) and is edited in the settings (search the game's buff list) or through the bridge.
+- **States:** invulnerable monsters (the `CannotBeDamaged` stat, e.g. a boss's immune phase) get a grey hatched bar; cullable monsters get a notch at their culling threshold by rarity (normal 35 %, magic 20 %, rare 10 %, unique 5 %, times your multiplier) and a tint once under it; hidden monsters are hidden or dimmed.
+- **Damage over time:** a dark hatched chunk at the end of the life fill shows what the running ignite, bleed or poison will still take.
+- **DPS and time to kill:** a moving average of the damage each monster takes, as `{dps}` and `{ttk}`.
+- **Overrides:** a look for specific monsters by metadata path (or name) regex: colors, opacity, grey, hatch, or hide.
+- **Ignore list and the why overlay:** Debug > Why overlay shows over each monster why its bar is or isn't drawn, with a `[+ ignore]` button. Untargetable monsters are hidden by default (uniques keep their bar).
+
+The icon glyphs and the ideas for these layers come from **syrairc's [ExileNameplates](https://github.com/syrairc/ExileNameplates_POE1)** (PoE1), used with his permission. `textures/status-atlas.png` is his atlas, downscaled into one texture by `textures/build-atlas.ps1` (his original sheets are in `textures/source`).
 
 ## Why it is cheap
 | | Stock HealthBars | Whats A Health Bar |
@@ -25,7 +35,7 @@ Crisp, animated health bars for the Path of Exile 2 HUD (ExileCore2), built to c
 | JIT | the HUD compiles plugins with optimizations disabled | `AssemblyInfo.cs` declares its own `Debuggable` attribute, so the JIT optimizes it (about 4x on the hot path) |
 
 The plugin times itself (Tick, Render split into build and flush, ns per drawn bar) and reports it through the AI Bridge.
-Measured on the PoE2 HUD with the in-game stress preview (`{"stress":500}`): **500 animated bars cost about 0.11 ms per frame** (Tick 14 µs, Render 101 µs, about 230 ns per bar).
+Measured on the PoE2 HUD with the in-game stress preview (`{"stress":500}`): **500 animated bars cost about 0.24 ms per frame** (Tick 85 µs, Render 159 µs, about 480 ns per bar, 2026-10-12 with the information layers; the same as without them, 88 / 157 µs). The layers add no per-frame component reads: buffs and stats are read at the classify rate, text is rebuilt only when it changes, and all icons are one extra draw command.
 
 ## Pools: life, energy shield, ward
 With **Stacked** (the default), the bar is as wide as life + ES + ward. Each pool fills its own share in its own color, in the order damage removes them: life on the left, then ES, then ward on the right. The bar drains right to left, the way the monster does.
@@ -40,6 +50,11 @@ With **Stacked** (the default), the bar is as wide as life + ES + ward. Each poo
   - It subscribes to `healthbars.preview` (`{seconds, focus}`), which the control center publishes to preview your edits in game.
   - It publishes `healthbars.kill` when a unique (or, optionally, also a rare) dies, with its name and time to kill.
 - **Settings:** every setting has a label and tooltip, so the control center can edit all of them live.
+- **Lists** (statuses, overrides, ignored paths) are not menu nodes; they have a section under the settings and bridge methods:
+  - `WhatsAHealthBar.GetLayers()` returns `{schema, statuses, overrides, ignoredPaths, icons, badgeStyles, problems}`.
+  - `WhatsAHealthBar.SetLayers(json)` replaces each list it is given (`{statuses?, overrides?, ignoredPaths?}`) and returns what didn't compile (invalid regex, unknown icon, bad color).
+  - `WhatsAHealthBar.SearchBuffs(query)` searches the game's buff definitions (`[{id, name, invisible, listed}]`).
+  - `WhatsAHealthBar.WhyNotDrawn(arg)` answers per entity whether its bar is drawn and the first reason it isn't (`arg`: empty for the nearest 40, an entity id, or text in the path or name).
 
 ## Build
 Target `net8.0-windows`. Set `exilecore2Package` to your ExileCore2 HUD folder and put the folder in `Plugins/Source`.
