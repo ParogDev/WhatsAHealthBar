@@ -27,7 +27,7 @@ namespace WhatsAHealthBar;
 ///   status, override and ignore lists), SearchBuffs (the game's buff ids), WhyNotDrawn (per-entity reasons); pub/sub:
 ///   subscribes to healthbars.preview, publishes healthbars.kill.
 /// </summary>
-public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings>
+public sealed partial class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings>
 {
     private const string GetStateName = "WhatsAHealthBar.GetState", PreviewName = "WhatsAHealthBar.Preview";
     private const string GetLayersName = "WhatsAHealthBar.GetLayers", SetLayersName = "WhatsAHealthBar.SetLayers";
