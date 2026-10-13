@@ -562,12 +562,12 @@ public sealed class BarRenderer
                 case 2: // over a tintable badge
                     StatusAtlas.BadgeUv(out var bu0, out var bv0, out var bu1, out var bv1);
                     Icon(ix, iy, ix + size, iy + size, bu0, bv0, bu1, bv1, Mul(L.StatusBadgeTints[rule], a));
-                    var pad = MathF.Round(size * 0.12f);
-                    StatusAtlas.Uv(icon, 1, out var ou0, out var ov0, out var ou1, out var ov1);
+                    var pad = MathF.Round(size * 0.1f);
+                    StatusAtlas.Uv(icon, 1, out var ou0, out var ov0, out var ou1, out var ov1, StatusAtlas.BareInset);
                     Icon(ix + pad, iy + pad, ix + size - pad, iy + size - pad, ou0, ov0, ou1, ov1, tint);
                     break;
                 default:
-                    StatusAtlas.Uv(icon, 1, out var u0, out var v0, out var u1, out var v1);
+                    StatusAtlas.Uv(icon, 1, out var u0, out var v0, out var u1, out var v1, StatusAtlas.BareInset);
                     Icon(ix, iy, ix + size, iy + size, u0, v0, u1, v1, tint);
                     break;
             }

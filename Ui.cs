@@ -426,7 +426,7 @@ internal static class Ui
         var dl = ImGui.GetWindowDrawList();
         if (plate) dl.AddRectFilled(org - new Vector2(2), org + new Vector2(size + 2), 0xFF0E0C12, 3f);
         if (atlas == IntPtr.Zero) { dl.AddRect(org, org + new Vector2(size), Muted); return; }
-        StatusAtlas.Uv(icon, sheet, out var u0, out var v0, out var u1, out var v1);
+        StatusAtlas.Uv(icon, sheet, out var u0, out var v0, out var u1, out var v1, sheet == 1 ? StatusAtlas.BareInset : 0);
         dl.AddImage(atlas, org, org + new Vector2(size), new Vector2(u0, v0), new Vector2(u1, v1), tint);
     }
 
@@ -437,7 +437,7 @@ internal static class Ui
         if (atlas == IntPtr.Zero) clicked = ImGui.Button(id, new Vector2(size, size));
         else
         {
-            StatusAtlas.Uv(icon, sheet, out var u0, out var v0, out var u1, out var v1);
+            StatusAtlas.Uv(icon, sheet, out var u0, out var v0, out var u1, out var v1, sheet == 1 ? StatusAtlas.BareInset : 0);
             ImGui.PushStyleColor(ImGuiCol.Button, 0u);
             clicked = ImGui.ImageButton(id, atlas, new Vector2(size, size), new Vector2(u0, v0), new Vector2(u1, v1), Vector4.Zero, V(tint));
             ImGui.PopStyleColor();

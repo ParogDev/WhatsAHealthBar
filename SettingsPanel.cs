@@ -27,7 +27,6 @@ public static class SettingsPanel
     private static readonly string[] DebuffBuff = { "Debuff", "Buff" };
     private static readonly string[] MatchKinds = { "Path", "Name" };
     private static readonly string[] TokenChips = BuildTokenChips();
-    private static readonly Vector4 White = Vector4.One;
 
     private static int _kind, _textKind, _openStatus = -1, _openOverride = -1;
     private static string _search = "", _ignoreInput = "", _iconFilter = "";
