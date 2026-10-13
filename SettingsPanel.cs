@@ -22,8 +22,9 @@ namespace WhatsAHealthBar;
 public static class SettingsPanel
 {
     private static readonly string[] Tabs = { "General", "Bars", "Text", "Status icons", "States", "Overrides", "Ignore", "Debug" };
+    /// <summary>Tab labels per BarKind, in enum order (the enum's own names are what the preview's focus takes).</summary>
     private static readonly string[] KindTabs = { "Unique", "Rare", "Magic", "Normal", "Minions", "Players", "You" };
-    private static readonly string[] PreviewFocus = { "Unique", "Rare", "Magic", "Normal", "Minion", "Player", "Self" };
+    private static readonly string[] PreviewFocus = Enum.GetNames<BarKind>();
     private static readonly string[] DebuffBuff = { "Debuff", "Buff" };
     private static readonly string[] MatchKinds = { "Path", "Name" };
     private static readonly string[] TokenChips = BuildTokenChips();
@@ -33,6 +34,7 @@ public static class SettingsPanel
     private static float TrailingW;
     private static string _search = "", _ignoreInput = "", _iconFilter = "";
     private static string? _searchDone;
+    private static double _searchRetryAt;
     private static readonly List<BuffDefDto> _searchHits = new();
     private static int _searchTotal;
     private static readonly Dictionary<string, string?> RegexErrors = new();
@@ -78,8 +80,9 @@ public static class SettingsPanel
         }
         Ui.PopStyle();
         // Compiled here and now (not on the next Tick): the samples, the problems badge and the bridge must see the edit
-        // even while the plugin is disabled and gets no Tick.
-        if (changed) plugin.CompileLayers();
+        // even while the plugin is disabled and gets no Tick. The samples re-resolve their statuses against the new rules
+        // on the next frame (their rule indices shifted).
+        if (changed) { plugin.CompileLayers(); Samples.Invalidate(); }
     }
 
     // ---- Header: name, enable, live status, preview ----
@@ -166,15 +169,9 @@ public static class SettingsPanel
         Ui.Slider(l.Gloss, "%.2f"); Ui.Slider(l.Shading, "%.2f");
     }
 
-    private static KindSettings Of(WhatsAHealthBarSettings s, BarKind k) => k switch
-    {
-        BarKind.Unique => s.Unique, BarKind.Rare => s.Rare, BarKind.Magic => s.Magic, BarKind.Normal => s.Normal,
-        BarKind.Minion => s.Minion, BarKind.Player => s.Player, _ => s.Self,
-    };
-
     private static void Kind(WhatsAHealthBar plugin, WhatsAHealthBarSettings s, BarKind kind)
     {
-        var k = Of(s, kind);
+        var k = s.For(kind);
         Samples.Draw(plugin, kind, ImGui.GetContentRegionAvail().X, 96);
         Ui.Tip("Live sample, drawn by the engine with these settings: fake hits and heals, the name and data texts, status icons, a damage-over-time chunk on uniques and rares");
         Ui.Toggle(k.Show);
@@ -192,7 +189,7 @@ public static class SettingsPanel
         if (Ui.Confirm("##whaCopyAll", "Overwrite every kind's size, segments, percent and texts with this kind's? Life colors and Show stay as they are.", "Copy to all"))
             for (var i = 0; i < 7; i++)
             {
-                var t = Of(s, (BarKind)i);
+                var t = s.For((BarKind)i);
                 if (ReferenceEquals(t, k)) continue;
                 t.Width.Value = k.Width.Value; t.Height.Value = k.Height.Value; t.Segments.Value = k.Segments.Value;
                 t.ShowPercent.Value = k.ShowPercent.Value;
@@ -211,7 +208,7 @@ public static class SettingsPanel
         Ui.RowLabel("Kind", "Which kind's three text slots to edit");
         if (Ui.SegmentedButtons(KindTabs, KindTabs[_textKind], out var picked)) _textKind = Array.IndexOf(KindTabs, picked);
         var kind = (BarKind)_textKind;
-        var k = Of(s, kind);
+        var k = s.For(kind);
         Samples.Draw(plugin, kind, ImGui.GetContentRegionAvail().X, 96);
         var sample = Samples.Bar(plugin, kind);
         Template(k.TextAbove, "Text above", sample, true);
@@ -269,8 +266,8 @@ public static class SettingsPanel
         var q = _search.Trim();
         if (q.Length >= 2)
         {
-            // Again when the text changes; an empty catalog is read again only once in game (the read reloads the file).
-            if (q != _searchDone && (_searchTotal >= 0 || plugin.InGame)) Search(plugin, q);
+            // Again when the text changes; an empty catalog (the read reloads the file) is tried again in game, every 2 s.
+            if (q != _searchDone || (_searchTotal < 0 && plugin.InGame && ImGui.GetTime() >= _searchRetryAt)) Search(plugin, q);
             if (_searchHits.Count == 0) Ui.Note(_searchTotal < 0 ? "Files.BuffDefinitions is empty: enter the game, then search again" : "nothing matches");
             ImGui.BeginChild("##whaHits", new Vector2(0, Math.Min(_searchHits.Count, 8) * (ImGui.GetFrameHeightWithSpacing()) + 4), ImGuiChildFlags.None);
             for (var i = 0; i < _searchHits.Count; i++)
@@ -312,7 +309,7 @@ public static class SettingsPanel
             var icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
             var tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
             var badgeTint = Colors.TryParse(r.BadgeTint, out var bt) ? bt : 0xFF30262A;
-            Ui.IconImage(atlas, icon, r.Badge, en ? tint : Ui.Alpha(tint, 0.35f), en ? badgeTint : Ui.Alpha(badgeTint, 0.35f), 20);
+            Ui.IconImage(atlas, icon, r.Badge, en ? tint : Ui.Alpha(tint, 0.35f), en ? badgeTint : Ui.Alpha(badgeTint, 0.35f), 20, s.Icons.Plate);
             ImGui.SameLine();
             var action = CardRow(r.Label.Length > 0 ? r.Label : r.Id, r.Id, r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64, open, i == 0, i == s.Statuses.Count - 1);
             changed |= Apply(action, s.Statuses, i, ref _openStatus);
@@ -338,8 +335,8 @@ public static class SettingsPanel
         _searchHits.Clear();
         _searchTotal = 0;
         var catalog = plugin.BuffCatalog();
-        // An empty catalog (not in game yet) isn't a result to cache: the search runs again once in game.
-        if (catalog.Count == 0) { _searchTotal = -1; _searchDone = null; return; }
+        // An empty catalog (not in game yet) isn't a result to keep: the search runs again, 2 s later, while in game.
+        if (catalog.Count == 0) { _searchTotal = -1; _searchRetryAt = ImGui.GetTime() + 2; return; }
         foreach (var d in catalog)
         {
             if (!d.Id.Contains(q, StringComparison.OrdinalIgnoreCase) && !d.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
@@ -402,7 +399,9 @@ public static class SettingsPanel
         Ui.Colored(Ui.Muted, "click to pick, Esc to close");
         const int cols = 12;
         const float cell = 34;
-        ImGui.BeginChild("##grid", new Vector2(cols * (cell + 6) + 16, 300), ImGuiChildFlags.None);
+        // A cell button is the image plus the frame padding on both sides, then the 2 px spacing pushed below.
+        var step = cell + 2 * ImGui.GetStyle().FramePadding.X + 2;
+        ImGui.BeginChild("##grid", new Vector2(cols * step + 16, 300), ImGuiChildFlags.None);
         var shown = 0;
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(2, 2));
         for (var i = 0; i < StatusAtlas.Count; i++)
@@ -760,6 +759,9 @@ public static class SettingsPanel
     {
         private readonly PoolSim?[] _sims = new PoolSim?[8];
         private readonly double[] _stepped = new double[8], _looked = new double[8];
+
+        /// <summary>The rules changed: every sample resolves its look again on its next frame.</summary>
+        public void Invalidate() => Array.Clear(_looked);
 
         public Bar Bar(WhatsAHealthBar plugin, BarKind kind) => Sim(plugin, (int)kind, kind).Bar;
 

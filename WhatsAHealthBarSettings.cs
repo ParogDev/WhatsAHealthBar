@@ -85,6 +85,13 @@ public sealed class WhatsAHealthBarSettings : ISettings
     [JsonIgnore]
     [Menu("Preview in game", "Draws one sample bar per kind in the middle of the screen for 8 seconds, with fake hits and heals (also from the control center)")]
     public ButtonNode Preview { get; set; } = new();
+
+    /// <summary>The one kind-to-settings mapping (the renderer and the panel both go through it).</summary>
+    public KindSettings For(BarKind kind) => kind switch
+    {
+        BarKind.Unique => Unique, BarKind.Rare => Rare, BarKind.Magic => Magic, BarKind.Normal => Normal,
+        BarKind.Minion => Minion, BarKind.Player => Player, _ => Self,
+    };
 }
 
 /// <summary>The Pools and Total line choices.</summary>

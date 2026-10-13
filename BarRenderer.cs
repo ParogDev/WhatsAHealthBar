@@ -162,8 +162,7 @@ public sealed class BarRenderer
         _totalOn = total is Bars.TotalAll or Bars.TotalRareUnique;
         _totalUpTo = total == Bars.TotalAll ? BarKind.Self : BarKind.Rare;
         _iconSize = MathF.Round(ic.Size.Value * _scale);
-        Set(BarKind.Unique, s.Unique); Set(BarKind.Rare, s.Rare); Set(BarKind.Magic, s.Magic); Set(BarKind.Normal, s.Normal);
-        Set(BarKind.Minion, s.Minion); Set(BarKind.Player, s.Player); Set(BarKind.Self, s.Self);
+        for (var k = BarKind.Unique; k <= BarKind.Self; k++) Set(k, s.For(k));
     }
 
     private void Set(BarKind kind, KindSettings k)
@@ -931,6 +930,10 @@ public sealed class BarRenderer
         var idxWrite = System.Runtime.CompilerServices.Unsafe.Add(ref data, 3);
         var vb = dl.VtxBuffer;
         if (idxWrite != dl._IdxWritePtr) return "the draw list's _IdxWritePtr is not 3 pointers after _Data (ImGui layout changed)";
+        // A draw list nothing has written into yet this frame (we are the first on the background list): ImGui's
+        // _ResetForNewFrame nulls the write pointers while the buffers keep their capacity (Data stays), so they only
+        // line up after the first PrimReserve, which is ours. Seen live 2026-10-13: every bar went through the fallback.
+        if (vb.Size == 0 && vtxWrite == IntPtr.Zero) return null;
         if (vtxWrite != vb.Data + vb.Size * VertBytes)
         {
             var at = (long)vtxWrite - (long)vb.Data;

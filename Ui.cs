@@ -390,13 +390,13 @@ internal static class Ui
     // ---- Icons from the status atlas ----
 
     /// <summary>One status icon as an image (no widget) at <paramref name="size"/>, drawn as the bar draws it: bare, on its gem, or over a tinted badge, on a dark plate.</summary>
-    public static void IconImage(IntPtr atlas, int icon, string badge, uint tint, uint badgeTint, float size)
+    public static void IconImage(IntPtr atlas, int icon, string badge, uint tint, uint badgeTint, float size, bool plate)
     {
         var org = ImGui.GetCursorScreenPos();
         org.Y += (ImGui.GetFrameHeight() - size) * 0.5f;
         ImGui.Dummy(new Vector2(size, ImGui.GetFrameHeight()));
         var dl = ImGui.GetWindowDrawList();
-        dl.AddRectFilled(org - new Vector2(2), org + new Vector2(size + 2), 0xFF0E0C12, 3f);
+        if (plate) dl.AddRectFilled(org - new Vector2(2), org + new Vector2(size + 2), 0xFF0E0C12, 3f);
         if (atlas == IntPtr.Zero) { dl.AddRect(org, org + new Vector2(size), Muted); return; }
         float u0, v0, u1, v1;
         var end = org + new Vector2(size);

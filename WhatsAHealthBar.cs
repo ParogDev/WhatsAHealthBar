@@ -882,6 +882,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         var L = _renderer.Rules;
         var look = _renderer.BaseLook(b.Kind);
         var states = Settings.States;
+        var oldCount = b.StatusCount;
         b.StatusCount = 0;
         if (b.Invulnerable)
         {
@@ -899,7 +900,11 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             {
                 if (!L.StatusById.TryGetValue(id, out var rule)) continue;
                 var hits = b.Statuses ??= new StatusHit[16];
-                hits[b.StatusCount++] = new StatusHit { Rule = rule, Stacks = id == "poison" ? 5 : 1, Until = now + 2 + (rule % 5) };
+                // The same statuses in the same order each pass: a timer still running keeps draining (the icon's time
+                // line and seconds), one that ran out is reapplied with a fresh 3-7 s, as the game would.
+                var k = b.StatusCount;
+                var until = k < oldCount && hits[k].Rule == rule && hits[k].Until > now ? hits[k].Until : now + 3 + (rule % 5);
+                hits[b.StatusCount++] = new StatusHit { Rule = rule, Stacks = id == "poison" ? 5 : 1, Until = until };
                 L.StatusPatches[rule]?.ApplyTo(ref look);
             }
             if (b.Kind <= BarKind.Rare && Settings.Dot.Enabled)
