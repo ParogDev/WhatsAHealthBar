@@ -75,7 +75,9 @@ public static class SettingsPanel
             ImGui.EndTabBar();
         }
         Ui.PopStyle();
-        if (changed) plugin.LayersChanged();
+        // Compiled here and now (not on the next Tick): the samples, the problems badge and the bridge must see the edit
+        // even while the plugin is disabled and gets no Tick.
+        if (changed) plugin.CompileLayers();
     }
 
     // ---- Header: name, enable, live status, preview ----
@@ -317,7 +319,7 @@ public static class SettingsPanel
             ImGui.SameLine();
             if (ImGui.ArrowButton("##dn", ImGuiDir.Down) && i < s.Statuses.Count - 1) { (s.Statuses[i + 1], s.Statuses[i]) = (s.Statuses[i], s.Statuses[i + 1]); if (open) _openStatus = i + 1; changed = true; }
             ImGui.SameLine();
-            if (ImGui.SmallButton("x")) { s.Statuses.RemoveAt(i); if (_openStatus >= i) _openStatus = -1; changed = true; Ui.EndCard(); ImGui.PopID(); break; }
+            if (ImGui.SmallButton("x")) { s.Statuses.RemoveAt(i); _openStatus = _openStatus == i ? -1 : _openStatus > i ? _openStatus - 1 : _openStatus; changed = true; Ui.EndCard(); ImGui.PopID(); break; }
             Ui.Tip("Remove this status");
             if (open) changed |= StatusBody(r, atlas);
             Ui.EndCard();
@@ -340,7 +342,8 @@ public static class SettingsPanel
         _searchHits.Clear();
         _searchTotal = 0;
         var catalog = plugin.BuffCatalog();
-        if (catalog.Count == 0) { _searchTotal = -1; return; }
+        // An empty catalog (not in game yet) isn't a result to cache: the search runs again next frame until it reads.
+        if (catalog.Count == 0) { _searchTotal = -1; _searchDone = null; return; }
         foreach (var d in catalog)
         {
             if (!d.Id.Contains(q, StringComparison.OrdinalIgnoreCase) && !d.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
@@ -492,7 +495,7 @@ public static class SettingsPanel
             ImGui.SameLine();
             if (ImGui.ArrowButton("##dn", ImGuiDir.Down) && i < s.Overrides.Count - 1) { (s.Overrides[i + 1], s.Overrides[i]) = (s.Overrides[i], s.Overrides[i + 1]); if (open) _openOverride = i + 1; changed = true; }
             ImGui.SameLine();
-            if (ImGui.SmallButton("x")) { s.Overrides.RemoveAt(i); if (_openOverride >= i) _openOverride = -1; changed = true; Ui.EndCard(); ImGui.PopID(); break; }
+            if (ImGui.SmallButton("x")) { s.Overrides.RemoveAt(i); _openOverride = _openOverride == i ? -1 : _openOverride > i ? _openOverride - 1 : _openOverride; changed = true; Ui.EndCard(); ImGui.PopID(); break; }
             Ui.Tip("Remove this override");
             if (open)
             {
@@ -729,7 +732,7 @@ public static class SettingsPanel
         {
             var sim = _sims[slot];
             if (sim != null) return sim;
-            sim = plugin.MakeSim(kind);
+            sim = plugin.MakeSim(kind, ImGui.GetTime());
             if (slot == 7) { sim.Bar.Invulnerable = true; sim.Bar.DisplayName = "Immune phase"; }
             sim.Bar.Dist = 30;
             return _sims[slot] = sim;

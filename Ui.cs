@@ -61,14 +61,14 @@ internal static class Ui
             try { v = p.GetValue(o); } catch { continue; }
             if (v == null) continue;
             if (v is ToggleNode or RangeNode<int> or RangeNode<float> or ColorNode or ListNode or TextNode or ButtonNode)
-            {
-                if (attr != null) Menu[v] = (attr.MenuName ?? p.Name, string.IsNullOrEmpty(attr.Tooltip) ? null : attr.Tooltip);
-            }
+                // A node without [Menu] (Enable) is labelled by its property name, so a row never shows a bare "?".
+                Menu[v] = (attr?.MenuName ?? p.Name, string.IsNullOrEmpty(attr?.Tooltip) ? null : attr!.Tooltip);
             else if (p.PropertyType.IsClass && p.PropertyType.Namespace == typeof(Ui).Namespace) Walk(v, depth + 1);
         }
     }
 
-    public static string Label(object node) => Menu.TryGetValue(node, out var m) ? m.Label : "?";
+    /// <summary>The node's [Menu] label (its property name without one); a node the index never reached says so.</summary>
+    public static string Label(object node) => Menu.TryGetValue(node, out var m) ? m.Label : "(node not under the settings root)";
     public static string? TipOf(object node) => Menu.TryGetValue(node, out var m) ? m.Tip : null;
 
     // ---- Style ----

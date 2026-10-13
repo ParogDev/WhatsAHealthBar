@@ -509,22 +509,28 @@ public sealed class BarRenderer
             maxScale = MathF.Max(maxScale, Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
         }
         if (n == 0) return 0;
-        // With plates, each cell is the icon plus its plate's 2 px rim; the gap keeps neighbouring rims apart.
+        // With plates, each cell is the icon plus its plate's 2 px rim; the gap keeps neighbouring rims (or a bare icon's
+        // time line, 2 px under it) apart. A stacks pill hangs above its icon, so with stacks on every row gets that
+        // much headroom and the block reserves it, instead of the pill landing on the row above or on the bar.
         var rim = _iconPlate ? 2f : 0f;
-        var gap = _iconPlate ? 3f : 2f;
+        var gap = _iconPlate ? 3f : 4f;
         var cell = MathF.Round(_iconSize * maxScale) + 2 * rim;
+        var fs = MathF.Max(10, MathF.Round((cell - 2 * rim) * 0.6f));
+        var pillH = MathF.Round(fs + 2);
+        var head = _showStacks ? pillH - 1 : 0;
+        var pitch = cell + gap + head;
         var cols = Math.Min(_iconCols, n);
         var rows = (n + _iconCols - 1) / _iconCols;
         var gridW = cols * cell + (cols - 1) * gap;
-        float gx, gy; // the grid's top-left
+        var gridH = rows * pitch - gap;
+        float gx, gy; // the grid's top-left (the first row's headroom included)
         switch (anchor)
         {
-            case 0: gx = left; gy = above - gap - rows * cell - (rows - 1) * gap; break; // above
+            case 0: gx = left; gy = above - gap - gridH; break;                          // above
             case 1: gx = left; gy = below + gap; break;                                  // below
-            case 2: gx = left - gap - gridW; gy = y0; break;                             // left
-            default: gx = rightX + gap + 2; gy = y0; break;                              // right
+            case 2: gx = left - gap - gridW; gy = y0 - head; break;                      // left
+            default: gx = rightX + gap + 2; gy = y0 - head; break;                       // right
         }
-        var fs = MathF.Max(10, MathF.Round((cell - 2 * rim) * 0.6f));
         var k = 0;
         for (var i = 0; i < b.StatusCount && k < n; i++)
         {
@@ -534,8 +540,8 @@ public sealed class BarRenderer
             var size = MathF.Round(_iconSize * Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
             var col = k % _iconCols;
             var row = k / _iconCols;
-            // Rows above the bar grow upward: the first row sits closest to the bar.
-            var cy = anchor == 0 ? gy + (rows - 1 - row) * (cell + gap) : gy + row * (cell + gap);
+            // Rows above the bar grow upward: the first row sits closest to the bar. Each row's cells start under its headroom.
+            var cy = (anchor == 0 ? gy + (rows - 1 - row) * pitch : gy + row * pitch) + head;
             var ix = MathF.Round(gx + col * (cell + gap) + (cell - size) * 0.5f);
             var iy = MathF.Round(cy + (cell - size) * 0.5f);
             var icon = L.StatusIcons[rule];
@@ -598,14 +604,13 @@ public sealed class BarRenderer
                 // vanishes into the glyph; the text comes last of all, over everything.
                 var s = Numbers[Math.Min(hit.Stacks, Numbers.Length - 1)];
                 var tw = MathF.Round(LabelWidth(s) * fs / _fontSize);
-                var ph = MathF.Round(fs + 2);
                 float sx1 = ix + size + rim, sy1 = iy + 1, sx0 = sx1 - tw - 5;
-                Round(sx0, sy1 - ph, sx1, sy1, Mul(0xFF0E0C12, a * 0.92f), 2, true, true);
-                TextAt(new Vector2(sx0 + 3, MathF.Round(sy1 - ph + 1)), Mul(0xFFFFFFFF, a), s, fs);
+                Round(sx0, sy1 - pillH, sx1, sy1, Mul(0xFF0E0C12, a * 0.92f), 2, true, true);
+                TextAt(new Vector2(sx0 + 3, MathF.Round(sy1 - pillH + 1)), Mul(0xFFFFFFFF, a), s, fs);
             }
             k++;
         }
-        return anchor <= 1 ? gap + rows * cell + (rows - 1) * gap : gap + gridW;
+        return anchor <= 1 ? gap + gridH : gap + gridW;
     }
 
     private static readonly string[] Numbers = BuildNumbers(1000);
@@ -635,9 +640,13 @@ public sealed class BarRenderer
     private void Hatch(float x0, float y0, float x1, float y1, uint col, int pattern)
     {
         var h = y1 - y0;
-        if (h < 2 || x1 - x0 < 1) return;
+        // Not in a sub-pixel blend copy: the translucent stripes would stack with the base copy's (the same reason the
+        // copies keep opaque quads only).
+        if (h < 2 || x1 - x0 < 1 || _opaqueOnly) return;
         if (AtlasId != IntPtr.Zero)
         {
+            // Textured stripes go out with the icons, after every bar's quads: a nearer bar overlapping a hatched one is
+            // striped across too (the same holds for icons); rare enough that the ~70x fewer quads win.
             for (var y = y0; y < y1; y += StatusAtlas.Cell)
             {
                 var ch = MathF.Min(y1 - y, StatusAtlas.Cell);

@@ -74,6 +74,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         Name = "Whats A Health Bar";
         _mainThread = Environment.CurrentManagedThreadId; // until the first Tick says which thread is the main one
+        // The Preview ButtonNode is for the control center (it presses nodes by reflection); the panel has its own button.
         Settings.Preview.OnPressed += () => StartPreview(8, null);
         GameController.PluginBridge.SaveMethod(GetStateName, (Func<string>)GetStateJson);
         GameController.PluginBridge.SaveMethod(PreviewName, (Func<string, string>)PreviewFromBridge);
@@ -198,10 +199,11 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         _tickMaxNext = Math.Max(_tickMaxNext, us);
     }
 
-    /// <summary>The lists changed (settings panel, bridge, [+ ignore]): recompiled on the next Tick.</summary>
+    /// <summary>The lists changed (bridge, [+ ignore]): recompiled on the next Tick.</summary>
     internal void LayersChanged() => _layersDirty = true;
 
-    private void CompileLayers()
+    /// <summary>Recompiles the lists now (main thread): the settings panel, whose edits must show while the plugin is disabled and gets no Tick.</summary>
+    internal void CompileLayers()
     {
         _layersDirty = false;
         CompiledLayers c;
@@ -703,7 +705,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     internal string? Suppressed => _suppressed;
     internal string? AtlasProblem => _atlasProblem;
     internal AnimParams AnimNow() => Anim();
-    internal PoolSim MakeSim(BarKind kind) => Sim(kind, _now);
+    /// <param name="now">The clock the sample will be stepped on (the panel's is ImGui's, not this plugin's).</param>
+    internal PoolSim MakeSim(BarKind kind, double now) => Sim(kind, now);
     internal void RequestPreview(double seconds, string? focus) => _previewRequests.Enqueue((seconds, focus, 0));
 
     /// <summary>The live numbers the Debug tab shows (a copy, so the panel formats them at its own rate).</summary>
