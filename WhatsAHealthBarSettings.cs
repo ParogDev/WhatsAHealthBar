@@ -8,77 +8,106 @@ using Newtonsoft.Json;
 namespace WhatsAHealthBar;
 
 /// <summary>
-/// Every node carries a [Menu] label and tooltip: the HUD menu and the Hexile control center (Health Bars page, generic
-/// settings form) both read them. Nested classes are groups there. Changes apply live: the renderer reads the nodes each frame.
+/// Every node carries a [Menu] label and tooltip: the HUD menu (SettingsMenu, the [Menu]-driven renderer) and the Hexile
+/// control center (Health Bars page, generic settings form) both read them. Nested classes are cards; [MenuTab] puts
+/// several on one tab. Changes apply live: the renderer reads the nodes each frame.
 /// </summary>
 public sealed class WhatsAHealthBarSettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new(true);
 
     [Menu("Visibility")]
+    [MenuTab("General")]
     public VisibilitySettings Visibility { get; set; } = new();
 
     [Menu("Animation")]
+    [MenuTab("General")]
     public AnimationSettings Animation { get; set; } = new();
 
-    [Menu("Look")]
+    [Menu("Look", "The look every kind shares. Sizes are for 1440p and scale with the window; each kind sets its own width, " +
+                  "height and life color in its card")]
+    [MenuTab("Bars")]
     public LookSettings Look { get; set; } = new();
 
-    [Menu("Text", "Names and data texts above, on and below the bars (per kind templates are in each kind's group)")]
+    [Menu("Text", "Names and data texts above, on and below the bars (per kind templates are in each kind's card and below)")]
+    [MenuTab("Text")]
     public TextSettings Text { get; set; } = new();
 
-    [Menu("Status icons", "Ailments, curses and buffs on monsters as icons by the bar. The list of statuses is edited below the " +
-                          "settings (Statuses), or from the control center")]
+    [Menu("Status icons", "Ailments, curses and buffs on monsters as icons by the bar. The statuses themselves are the list " +
+                          "below (also from the control center)")]
+    [MenuTab("Status icons")]
     public StatusIconSettings Icons { get; set; } = new();
 
     [Menu("States", "How invulnerable, cullable and hidden monsters' bars look")]
+    [MenuTab("States")]
     public StateSettings States { get; set; } = new();
 
     [Menu("Damage over time", "Shows the life that running ailments (ignite, bleed, poison...) will still take")]
+    [MenuTab("States")]
     public DotSettings Dot { get; set; } = new();
 
     [Menu("Unique enemies")]
+    [MenuTab("Bars")]
     public KindSettings Unique { get; set; } = KindSettings.Make(true, 150, 16, Color.FromArgb(255, 232, 120, 36), 10, true, "{name}");
 
     [Menu("Rare enemies")]
+    [MenuTab("Bars")]
     public KindSettings Rare { get; set; } = KindSettings.Make(true, 118, 14, Color.FromArgb(255, 226, 196, 52), 4, true, "{name}");
 
     [Menu("Magic enemies")]
+    [MenuTab("Bars")]
     public KindSettings Magic { get; set; } = KindSettings.Make(true, 86, 10, Color.FromArgb(255, 92, 132, 255), 0, false);
 
     [Menu("Normal enemies")]
+    [MenuTab("Bars")]
     public KindSettings Normal { get; set; } = KindSettings.Make(true, 68, 6, Color.FromArgb(255, 214, 58, 52), 0, false);
 
     [Menu("Minions and allies")]
+    [MenuTab("Bars")]
     public KindSettings Minion { get; set; } = KindSettings.Make(true, 56, 5, Color.FromArgb(255, 72, 196, 110), 0, false);
 
     [Menu("Other players")]
+    [MenuTab("Bars")]
     public KindSettings Player { get; set; } = KindSettings.Make(true, 96, 10, Color.FromArgb(255, 64, 200, 140), 0, false);
 
     [Menu("You")]
+    [MenuTab("Bars")]
     public KindSettings Self { get; set; } = KindSettings.Make(false, 96, 10, Color.FromArgb(255, 64, 200, 140), 0, false);
 
     [Menu("Motion")]
+    [MenuTab("General")]
     public MotionSettings Motion { get; set; } = new();
 
     [Menu("Bridge")]
+    [MenuTab("General")]
     public BridgeSettings Bridge { get; set; } = new();
 
     [Menu("Debug")]
+    [MenuTab("Debug")]
     public DebugSettings Debug { get; set; } = new();
 
-    /// <summary>Statuses shown as icons (PoE2 defaults from the game's own buff ids). Edited in the custom section and via the bridge.</summary>
-    [IgnoreMenu]
+    /// <summary>Statuses shown as icons (PoE2 defaults from the game's own buff ids). Edited on the Status icons tab (the list
+    /// editor, with the buff search above it) and via the bridge. The control center skips it (a list, not a node).</summary>
+    [Menu("Statuses", "Order is draw order. Click a line to edit it; the icon on the left is drawn as it will be on the bar. " +
+                      "Right-click the label to restore the PoE2 defaults")]
+    [MenuTab("Status icons", Last = true)]
+    [MenuList(ItemName = "status", Summary = nameof(StatusRule.Label), Detail = nameof(StatusRule.Id))]
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<StatusRule> Statuses { get; set; } = StatusDefaults.Make();
 
     /// <summary>Per-monster looks by metadata path or name regex, first match wins.</summary>
-    [IgnoreMenu]
+    [Menu("Overrides", "A look for specific monsters: a regex on the metadata path (\"Monsters/.*Boss\") or the display name. " +
+                       "The first enabled match wins, so order matters. The why overlay (Debug) shows each monster's path")]
+    [MenuTab("Overrides")]
+    [MenuList(ItemName = "override", Summary = nameof(OverrideRule.Name), Detail = nameof(OverrideRule.Pattern))]
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<OverrideRule> Overrides { get; set; } = new();
 
     /// <summary>Metadata paths (without "@level") that never get a bar.</summary>
-    [IgnoreMenu]
+    [Menu("Ignored paths", "Metadata paths (without @level) that never get a bar; click one to stop ignoring it. The why " +
+                           "overlay (Debug tab) adds one with a click on the monster")]
+    [MenuTab("Ignore")]
+    [MenuList(ItemName = "path", Chips = true)]
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<string> IgnoredPaths { get; set; } = new();
 
@@ -365,6 +394,11 @@ public sealed class DebugSettings
 [Submenu(CollapsedByDefault = true)]
 public sealed class KindSettings
 {
+    /// <summary>A hook for the panel: SettingsMenu.Custom draws the live sample bar in this row's place. Not a setting.</summary>
+    [IgnoreMenu]
+    [JsonIgnore]
+    public EmptyNode Sample { get; set; } = new();
+
     [Menu("Show")]
     public ToggleNode Show { get; set; } = new(true);
 
@@ -391,6 +425,11 @@ public sealed class KindSettings
 
     [Menu("Text below", "Same tokens, under the bar")]
     public TextNode TextBelow { get; set; } = new("");
+
+    /// <summary>A hook for the panel: the "copy to all kinds, keep colors" button is drawn in this row's place. Not a setting.</summary>
+    [IgnoreMenu]
+    [JsonIgnore]
+    public EmptyNode CopyToAll { get; set; } = new();
 
     public static KindSettings Make(bool show, int width, int height, Color life, int segments, bool percent, string above = "") => new()
     {

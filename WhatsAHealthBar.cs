@@ -181,7 +181,7 @@ public sealed partial class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBar
             StartPreview(msg?["seconds"]?.Value<double?>() ?? 8, (string?)msg?["focus"], msg?["stress"]?.Value<int?>() ?? 0);
         while (_previewRequests.TryDequeue(out var req)) StartPreview(req.seconds, req.focus, req.stress);
         // The panel compiles its own edits once the mouse lets go; one left pending when the menu closed on it is compiled here.
-        if (SettingsPanel.Pending && ImGui.GetTime() - SettingsPanel.DrawnAt > 0.25) { SettingsPanel.Pending = false; _layersDirty = true; }
+        if (_panel is { Pending: true } p && ImGui.GetTime() - p.DrawnAt > 0.25) { p.Pending = false; _layersDirty = true; }
         if (_layersDirty) CompileLayers();
 
         _active = Evaluate();
@@ -695,11 +695,13 @@ public sealed partial class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBar
     }
 
     /// <summary>
-    /// The custom panel (SettingsPanel.cs) draws every [Menu] node itself, in tabs, with the lists the nodes can't hold;
-    /// the base drawer isn't called, so nothing is drawn twice. The nodes stay [Menu] nodes: the control center edits them by
-    /// reflection and the HUD saves them as before.
+    /// The panel (SettingsPanel.cs) is the [Menu]-driven SettingsMenu renderer plus this plugin's own blocks (live sample
+    /// bars, the buff search, the icon grid); the base drawer isn't called, so nothing is drawn twice. The nodes stay
+    /// [Menu] nodes: the control center edits them by reflection and the HUD saves them as before.
     /// </summary>
-    public override void DrawSettings() => SettingsPanel.Draw(this, Settings);
+    public override void DrawSettings() => (_panel ??= new SettingsPanel(this)).Draw(Settings);
+
+    private SettingsPanel? _panel;
 
     // ---- What the settings panel reads and drives (main thread, inside the HUD's menu draw) ----
 
