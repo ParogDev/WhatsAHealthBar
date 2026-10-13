@@ -91,6 +91,7 @@ internal static class Ui
     {
         var avail = ImGui.GetContentRegionAvail().X;
         ControlW = Math.Clamp(avail - LabelW - 24, 150f, 320f);
+        _rowId = 0;
         for (var i = 0; i < StyleColors.Length; i++) ImGui.PushStyleColor(StyleColors[i].Col, StyleColors[i].Value);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
         ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 4f);
@@ -166,12 +167,18 @@ internal static class Ui
 
     // ---- Node rows ----
 
+    // ImGui ids for the node rows: a counter restarted by PushStyle each frame, so the same row keeps the same id from
+    // frame to frame (a drag stays on its slider) and no two rows share one (object.GetHashCode is not unique).
+    private static int _rowId;
+
+    public static void PushRowId() => ImGui.PushID(_rowId++);
+
     /// <summary>A toggle row: the pill, then the label; the node's tooltip on both.</summary>
     public static bool Toggle(ToggleNode node, string? label = null)
     {
         var tip = TipOf(node);
         var v = node.Value;
-        ImGui.PushID(node.GetHashCode());
+        PushRowId();
         Anim.TryGetValue(node, out var a);
         var changed = Pill("##p", ref v, ref a);
         Anim[node] = a;
@@ -199,11 +206,13 @@ internal static class Ui
         var dt = ImGui.GetIO().DeltaTime;
         var target = value ? 1f : 0f;
         anim = Math.Clamp(anim + (target - anim) * Math.Min(dt * 12f, 1f), 0f, 1f);
-        var track = LerpU(0xFF2A2733, AccentDim, anim);
-        if (ImGui.IsItemHovered()) track = LerpU(track, 0xFFFFFFFF, 0.08f);
-        dl.AddRectFilled(cur, cur + new Vector2(w, h), track, r);
+        // Faded with the style's alpha, so a pill inside BeginDisabled looks as dead as it is.
+        var fade = ImGui.GetStyle().Alpha;
+        var track = Colors.Lerp(0xFF2A2733, AccentDim, anim);
+        if (ImGui.IsItemHovered()) track = Colors.Lerp(track, 0xFFFFFFFF, 0.08f);
+        dl.AddRectFilled(cur, cur + new Vector2(w, h), Alpha(track, fade), r);
         var knobX = cur.X + r + anim * (w - h);
-        dl.AddCircleFilled(new Vector2(knobX, cur.Y + r), r - 3f, LerpU(0xFF8A8A90, 0xFFFFF4E0, anim), 16);
+        dl.AddCircleFilled(new Vector2(knobX, cur.Y + r), r - 3f, Alpha(Colors.Lerp(0xFF8A8A90, 0xFFFFF4E0, anim), fade), 16);
         return changed;
     }
 
@@ -211,7 +220,7 @@ internal static class Ui
     {
         RowLabel(label ?? Label(node), TipOf(node));
         var v = node.Value;
-        ImGui.PushID(node.GetHashCode());
+        PushRowId();
         var changed = ImGui.SliderInt("##s", ref v, node.Min, node.Max);
         ImGui.PopID();
         Tip(TipOf(node));
@@ -223,7 +232,7 @@ internal static class Ui
     {
         RowLabel(label ?? Label(node), TipOf(node));
         var v = node.Value;
-        ImGui.PushID(node.GetHashCode());
+        PushRowId();
         var changed = ImGui.SliderFloat("##s", ref v, node.Min, node.Max, fmt);
         ImGui.PopID();
         Tip(TipOf(node));
@@ -236,7 +245,7 @@ internal static class Ui
     {
         RowLabel(label ?? Label(node), TipOf(node));
         var v = ToV(node.Value);
-        ImGui.PushID(node.GetHashCode());
+        PushRowId();
         var changed = ImGui.ColorEdit4("##c", ref v, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.AlphaBar | ImGuiColorEditFlags.AlphaPreviewHalf);
         ImGui.PopID();
         Tip(TipOf(node));
@@ -258,7 +267,7 @@ internal static class Ui
     public static bool Segmented(ListNode node, string? label = null)
     {
         RowLabel(label ?? Label(node), TipOf(node));
-        ImGui.PushID(node.GetHashCode());
+        PushRowId();
         var changed = SegmentedButtons(node.Values, node.Value, out var picked);
         ImGui.PopID();
         if (changed) node.Value = picked;
@@ -333,13 +342,8 @@ internal static class Ui
         else { dl.AddRectFilled(org, org + size, fill, r); dl.AddText(org + new Vector2(5, 1.5f), Contrast(fill), text); }
     }
 
-    private static uint Contrast(uint c) => ((c & 0xFF) * 77 + ((c >> 8) & 0xFF) * 150 + ((c >> 16) & 0xFF) * 29) >> 8 > 150 ? 0xFF14120E : 0xFFFFFFFF;
-
-    public static uint LerpU(uint x, uint y, float t)
-    {
-        uint Ch(int sh) => (uint)(((x >> sh) & 0xFF) + (((int)((y >> sh) & 0xFF) - (int)((x >> sh) & 0xFF)) * t)) & 0xFF;
-        return Ch(0) | Ch(8) << 8 | Ch(16) << 16 | Ch(24) << 24;
-    }
+    /// <summary>Readable text on a fill: near-black on light, white on dark.</summary>
+    private static uint Contrast(uint c) => Colors.Luma(c) > 150 ? 0xFF14120E : 0xFFFFFFFF;
 
     // ---- Cards ----
 
@@ -385,17 +389,32 @@ internal static class Ui
 
     // ---- Icons from the status atlas ----
 
-    /// <summary>One atlas icon as an image (no widget), drawn at <paramref name="size"/> with its tint on a dark plate.</summary>
-    public static void IconImage(IntPtr atlas, int icon, int sheet, uint tint, float size, bool plate = true)
+    /// <summary>One status icon as an image (no widget) at <paramref name="size"/>, drawn as the bar draws it: bare, on its gem, or over a tinted badge, on a dark plate.</summary>
+    public static void IconImage(IntPtr atlas, int icon, string badge, uint tint, uint badgeTint, float size)
     {
         var org = ImGui.GetCursorScreenPos();
         org.Y += (ImGui.GetFrameHeight() - size) * 0.5f;
         ImGui.Dummy(new Vector2(size, ImGui.GetFrameHeight()));
         var dl = ImGui.GetWindowDrawList();
-        if (plate) dl.AddRectFilled(org - new Vector2(2), org + new Vector2(size + 2), 0xFF0E0C12, 3f);
+        dl.AddRectFilled(org - new Vector2(2), org + new Vector2(size + 2), 0xFF0E0C12, 3f);
         if (atlas == IntPtr.Zero) { dl.AddRect(org, org + new Vector2(size), Muted); return; }
-        StatusAtlas.Uv(icon, sheet, out var u0, out var v0, out var u1, out var v1, sheet == 1 ? StatusAtlas.BareInset : 0);
-        dl.AddImage(atlas, org, org + new Vector2(size), new Vector2(u0, v0), new Vector2(u1, v1), tint);
+        float u0, v0, u1, v1;
+        var end = org + new Vector2(size);
+        if (badge == Badges.Gem)
+        {
+            StatusAtlas.Uv(icon, 0, out u0, out v0, out u1, out v1);
+            dl.AddImage(atlas, org, end, new Vector2(u0, v0), new Vector2(u1, v1), tint);
+            return;
+        }
+        var pad = Vector2.Zero;
+        if (badge == Badges.OverBadge)
+        {
+            StatusAtlas.BadgeUv(out u0, out v0, out u1, out v1);
+            dl.AddImage(atlas, org, end, new Vector2(u0, v0), new Vector2(u1, v1), badgeTint);
+            pad = new Vector2(MathF.Round(size * 0.1f));
+        }
+        StatusAtlas.Uv(icon, 1, out u0, out v0, out u1, out v1, StatusAtlas.BareInset);
+        dl.AddImage(atlas, org + pad, end - pad, new Vector2(u0, v0), new Vector2(u1, v1), tint);
     }
 
     /// <summary>An icon cell button for the picker grid: transparent frame, hover highlight, a ring when selected.</summary>

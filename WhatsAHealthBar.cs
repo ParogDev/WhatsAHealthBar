@@ -711,7 +711,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     internal PoolSim MakeSim(BarKind kind, double now) => Sim(kind, now);
     internal void RequestPreview(double seconds, string? focus) => _previewRequests.Enqueue((seconds, focus, 0));
 
-    private static readonly string[] KindKeys = { "unique", "rare", "magic", "normal", "minion", "player", "self" };
+    internal bool InGame => GameController.InGame;
+
+    /// <summary>ByKind's keys, from the enum itself (lowercase), built once.</summary>
+    private static readonly string[] KindKeys = Array.ConvertAll(Enum.GetNames<BarKind>(), n => n.ToLowerInvariant());
 
     /// <summary>The counts, into a DTO the caller owns: GetState makes a new one, the panel's Debug tab reuses its own.</summary>
     internal HealthBarCountsDto FillCounts(HealthBarCountsDto c)

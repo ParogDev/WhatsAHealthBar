@@ -368,7 +368,7 @@ public sealed class BarRenderer
             {
                 Rect(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(_dotColor, a));
                 Hatch(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(0xFFFFFFFF, a * 0.16f), StatusAtlas.HatchFine, true);
-                if (cx0 > _lifeRX0 + 1) Rect(cx0, _lifeY0, cx0 + 1, _lifeY1, Mul(Lerp(life, 0xFFFFFFFF, 0.6f), a * 0.9f));
+                if (cx0 > _lifeRX0 + 1) Over(cx0, _lifeY0, cx0 + 1, _lifeY1, Mul(Lerp(life, 0xFFFFFFFF, 0.6f), a * 0.9f));
             }
         }
         // Invulnerable (or a patch asking for it): light diagonal stripes across the whole bar, a shield rather than a
@@ -504,38 +504,32 @@ public sealed class BarRenderer
         var hits = b.Statuses!;
         var n = 0;
         var maxScale = 0f;
-        var anyStacks = false;
         for (var i = 0; i < b.StatusCount && n < _iconMax; i++)
         {
             var rule = hits[i].Rule;
             if ((uint)rule >= (uint)L.Statuses.Length || L.Statuses[rule].Debuff != debuffs) continue;
             n++;
             maxScale = MathF.Max(maxScale, Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
-            anyStacks |= hits[i].Stacks > 1;
         }
         if (n == 0) return 0;
         // With plates, each cell is the icon plus its plate's 2 px rim; the gap keeps neighbouring rims (or a bare icon's
-        // time line, 2 px under it) apart. A stacks pill hangs above its icon, so when a status in the block has stacks
-        // every row gets that much headroom and the block reserves it, instead of the pill landing on the row above or
-        // on the bar.
+        // time line, 2 px under it) apart.
         var rim = _iconPlate ? 2f : 0f;
         var gap = _iconPlate ? 3f : 4f;
         var cell = MathF.Round(_iconSize * maxScale) + 2 * rim;
         var fs = MathF.Max(10, MathF.Round((cell - 2 * rim) * 0.6f));
-        var pillH = MathF.Round(fs + 2);
-        var head = _showStacks && anyStacks ? pillH - 1 : 0;
-        var pitch = cell + gap + head;
+        var pitch = cell + gap;
         var cols = Math.Min(_iconCols, n);
         var rows = (n + _iconCols - 1) / _iconCols;
         var gridW = cols * cell + (cols - 1) * gap;
         var gridH = rows * pitch - gap;
-        float gx, gy; // the grid's top-left (the first row's headroom included)
+        float gx, gy; // the grid's top-left
         switch (anchor)
         {
             case 0: gx = left; gy = above - gap - gridH; break;                          // above
             case 1: gx = left; gy = below + gap; break;                                  // below
-            case 2: gx = left - gap - gridW; gy = y0 - head; break;                      // left
-            default: gx = rightX + gap + 2; gy = y0 - head; break;                       // right
+            case 2: gx = left - gap - gridW; gy = y0; break;                             // left
+            default: gx = rightX + gap + 2; gy = y0; break;                              // right
         }
         var k = 0;
         for (var i = 0; i < b.StatusCount && k < n; i++)
@@ -546,8 +540,8 @@ public sealed class BarRenderer
             var size = MathF.Round(_iconSize * Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
             var col = k % _iconCols;
             var row = k / _iconCols;
-            // Rows above the bar grow upward: the first row sits closest to the bar. Each row's cells start under its headroom.
-            var cy = (anchor == 0 ? gy + (rows - 1 - row) * pitch : gy + row * pitch) + head;
+            // Rows above the bar grow upward: the first row sits closest to the bar.
+            var cy = anchor == 0 ? gy + (rows - 1 - row) * pitch : gy + row * pitch;
             var ix = MathF.Round(gx + col * (cell + gap) + (cell - size) * 0.5f);
             var iy = MathF.Round(cy + (cell - size) * 0.5f);
             var icon = L.StatusIcons[rule];
@@ -605,14 +599,14 @@ public sealed class BarRenderer
             }
             if (_showStacks && hit.Stacks > 1)
             {
-                // Stacks in a small dark pill hung off the icon's top-right corner (its bottom one pixel into the icon,
-                // the rest above it, since the icon image would cover a pill drawn inside its rectangle), so "5" never
-                // vanishes into the glyph; the text comes last of all, over everything.
+                // Stacks in a small dark pill on the icon's top-right corner, drawn over the icon (an Over quad: the
+                // icons' own draw command, after the icon), so "5" never vanishes into the glyph; the text comes last.
                 var s = Numbers[Math.Min(hit.Stacks, Numbers.Length - 1)];
                 var tw = MathF.Round(LabelWidth(s) * fs / _fontSize);
-                float sx1 = ix + size + rim, sy1 = iy + 1, sx0 = sx1 - tw - 5;
-                Round(sx0, sy1 - pillH, sx1, sy1, Mul(0xFF0E0C12, a * 0.92f), 2, true, true);
-                TextAt(new Vector2(sx0 + 3, MathF.Round(sy1 - pillH + 1)), Mul(0xFFFFFFFF, a), s, fs);
+                var ph = MathF.Round(fs + 2);
+                float sx1 = ix + size + rim, sy0 = iy - rim - 1, sx0 = sx1 - tw - 5;
+                Over(sx0, sy0, sx1, sy0 + ph, Mul(0xFF0E0C12, a * 0.92f));
+                TextAt(new Vector2(sx0 + 3, MathF.Round(sy0 + 1)), Mul(0xFFFFFFFF, a), s, fs);
             }
             k++;
         }
@@ -678,9 +672,20 @@ public sealed class BarRenderer
     /// <summary>Desaturated and darker: the invulnerable and "grey" patch look.</summary>
     private static uint Grey(uint c)
     {
-        var l = (uint)(((c & 0xFF) * 77 + ((c >> 8) & 0xFF) * 150 + ((c >> 16) & 0xFF) * 29) >> 8);
-        l = l * 3 / 4;
+        var l = Colors.Luma(c) * 3 / 4;
         return (c & 0xFF000000) | l << 16 | l << 8 | l;
+    }
+
+    /// <summary>
+    /// A plain colored rectangle in the icons' draw command (a window into the atlas's solid block), so it draws over the
+    /// icons and the textured stripes; a quad in the bar batch without the atlas.
+    /// </summary>
+    private void Over(float x0, float y0, float x1, float y1, uint col)
+    {
+        if (AtlasId == IntPtr.Zero) { Rect(x0, y0, x1, y1, col); return; }
+        if (x1 - x0 < 0.5f || y1 - y0 < 0.5f) return;
+        StatusAtlas.SolidUv(out var u0, out var v0, out var u1, out var v1);
+        Icon(x0, y0, x1, y1, u0, v0, u1, v1, col);
     }
 
     private static uint PoolColor(int p, uint life, uint es, uint ward) => p == Bar.Life ? life : p == Bar.Es ? es : ward;
@@ -1064,11 +1069,8 @@ public sealed class BarRenderer
         return (abgr & 0x00FFFFFF) | aa << 24;
     }
 
-    private static uint Lerp(uint x, uint y, float t)
-    {
-        uint Ch(int sh) => (uint)(((x >> sh) & 0xFF) + (((int)((y >> sh) & 0xFF) - (int)((x >> sh) & 0xFF)) * t)) & 0xFF;
-        return Ch(0) | Ch(8) << 8 | Ch(16) << 16 | (x & 0xFF000000);
-    }
+    /// <summary>Blends the color channels, keeps x's alpha.</summary>
+    private static uint Lerp(uint x, uint y, float t) => (Colors.Lerp(x, y, t) & 0x00FFFFFF) | (x & 0xFF000000);
 
     private static string[] BuildPercent()
     {

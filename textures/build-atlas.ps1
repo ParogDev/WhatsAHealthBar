@@ -3,7 +3,8 @@
 # $Cell px with high-quality bicubic filtering: the HUD loads textures without mipmaps, so a 256 px cell drawn at 20 px
 # would shimmer. One atlas = one texture = one extra draw command for every icon on screen.
 # Layout (StatusAtlas.cs must match): gem-badged icons at x 0, bare icons at x 8*Cell, the plain badge at x 16*Cell y 0,
-# and two tiling hatch patterns (white diagonal stripes, period 8 then 4 px) at x 16*Cell, y 2*Cell and 3*Cell. The bare
+# two tiling hatch patterns (white diagonal stripes, period 8 then 4 px) at x 16*Cell, y 2*Cell and 3*Cell, and a solid
+# white block at y 4*Cell. The bare
 # glyphs are brightened (their body is a 56-100% grey gradient in the source, which made every tint look dim): body to
 # white, the dark edge kept, so a tint draws at its own color.
 # Windows PowerShell 5.1: powershell -NoProfile -ExecutionPolicy Bypass -File textures\build-atlas.ps1
@@ -68,6 +69,12 @@ function Hatch($period, $width, $dy) {
 }
 Hatch 8 2.2 (2 * $Cell)
 Hatch 4 1.3 (3 * $Cell)
+
+# A solid white block (16 px, centred in the cell at row 4): the renderer samples its middle for overlays that must draw
+# over the icons (the stacks pill, the damage-over-time edge) while staying in the icons' one draw command.
+$white = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
+$g.FillRectangle($white, (2 * $cols * $Cell) + 24, (4 * $Cell) + 24, 16, 16)
+$white.Dispose()
 
 $g.Dispose()
 $out = Join-Path $dir 'status-atlas.png'

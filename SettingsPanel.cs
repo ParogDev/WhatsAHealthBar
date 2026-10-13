@@ -29,11 +29,10 @@ public static class SettingsPanel
     private static readonly string[] TokenChips = BuildTokenChips();
 
     private static int _kind, _textKind, _openStatus = -1, _openOverride = -1;
-    /// <summary>Room a list card keeps on its right for the kind badge, the two arrows and the remove button.</summary>
-    private const float TrailingW = 190f;
+    /// <summary>Room a list card keeps on its right for the kind badge, the two arrows and the remove button (measured each frame, for the font in use).</summary>
+    private static float TrailingW;
     private static string _search = "", _ignoreInput = "", _iconFilter = "";
     private static string? _searchDone;
-    private static double _searchRetryAt;
     private static readonly List<BuffDefDto> _searchHits = new();
     private static int _searchTotal;
     private static readonly Dictionary<string, string?> RegexErrors = new();
@@ -47,6 +46,8 @@ public static class SettingsPanel
         // itself: the samples animate and edits show whether the plugin is on or off.
         plugin.Renderer.Prepare(s, plugin.ResolutionScale);
         Ui.PushStyle();
+        var style = ImGui.GetStyle();
+        TrailingW = ImGui.CalcTextSize("debuff").X + 10 + 2 * ImGui.GetFrameHeight() + ImGui.CalcTextSize("x").X + 2 * style.FramePadding.X + 4 * style.ItemSpacing.X + 8;
         Header(plugin, s);
         var changed = false;
         if (ImGui.BeginTabBar("##whaTabs", ImGuiTabBarFlags.NoCloseWithMiddleMouseButton))
@@ -100,8 +101,11 @@ public static class SettingsPanel
             Ui.Tip("Something in the lists didn't compile: see the Debug tab");
         }
         ImGui.SameLine(ImGui.GetContentRegionMax().X - 150);
+        // Only while enabled: the request is drained by Tick, which a disabled plugin doesn't get (it would fire later).
+        ImGui.BeginDisabled(!s.Enable);
         if (Ui.AccentButton("Preview in game", "Sample bars mid-screen for 8 seconds with fake hits, heals, names, icons and an immune sample, the kind whose tab is open first. Also from the control center", 150))
             plugin.RequestPreview(8, PreviewFocus[Math.Clamp(_kind, 0, 6)]);
+        ImGui.EndDisabled();
         ImGui.Dummy(new Vector2(0, 2));
     }
 
@@ -219,7 +223,7 @@ public static class SettingsPanel
     /// <summary>One text slot: the input, the token chips (click to append) and the string the sample bar shows right now.</summary>
     private static void Template(TextNode node, string label, Bar sample, bool chips)
     {
-        ImGui.PushID(node.GetHashCode());
+        Ui.PushRowId();
         Ui.RowLabel(label, Ui.TipOf(node));
         ImGui.SetNextItemWidth(-1);
         var v = node.Value ?? "";
@@ -265,9 +269,9 @@ public static class SettingsPanel
         var q = _search.Trim();
         if (q.Length >= 2)
         {
-            // Again when the text changes; while the catalog is empty (not in game yet), a retry every half second.
-            if (q != _searchDone && ImGui.GetTime() >= _searchRetryAt) Search(plugin, q);
-            if (_searchHits.Count == 0) Ui.Note(_searchTotal < 0 ? "Files.BuffDefinitions is empty (not in game yet?)" : "nothing matches");
+            // Again when the text changes; an empty catalog is read again only once in game (the read reloads the file).
+            if (q != _searchDone && (_searchTotal >= 0 || plugin.InGame)) Search(plugin, q);
+            if (_searchHits.Count == 0) Ui.Note(_searchTotal < 0 ? "Files.BuffDefinitions is empty: enter the game, then search again" : "nothing matches");
             ImGui.BeginChild("##whaHits", new Vector2(0, Math.Min(_searchHits.Count, 8) * (ImGui.GetFrameHeightWithSpacing()) + 4), ImGuiChildFlags.None);
             for (var i = 0; i < _searchHits.Count; i++)
             {
@@ -307,7 +311,8 @@ public static class SettingsPanel
             if (EnableBox(ref en, "Shown as an icon when on")) { r.Enabled = en; changed = true; }
             var icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
             var tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
-            Ui.IconImage(atlas, icon, r.Badge == Badges.Gem ? 0 : 1, en ? tint : Ui.Alpha(tint, 0.35f), 20);
+            var badgeTint = Colors.TryParse(r.BadgeTint, out var bt) ? bt : 0xFF30262A;
+            Ui.IconImage(atlas, icon, r.Badge, en ? tint : Ui.Alpha(tint, 0.35f), en ? badgeTint : Ui.Alpha(badgeTint, 0.35f), 20);
             ImGui.SameLine();
             var action = CardRow(r.Label.Length > 0 ? r.Label : r.Id, r.Id, r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64, open, i == 0, i == s.Statuses.Count - 1);
             changed |= Apply(action, s.Statuses, i, ref _openStatus);
@@ -333,8 +338,8 @@ public static class SettingsPanel
         _searchHits.Clear();
         _searchTotal = 0;
         var catalog = plugin.BuffCatalog();
-        // An empty catalog (not in game yet) isn't a result to cache: the search runs again, half a second later.
-        if (catalog.Count == 0) { _searchTotal = -1; _searchDone = null; _searchRetryAt = ImGui.GetTime() + 0.5; return; }
+        // An empty catalog (not in game yet) isn't a result to cache: the search runs again once in game.
+        if (catalog.Count == 0) { _searchTotal = -1; _searchDone = null; return; }
         foreach (var d in catalog)
         {
             if (!d.Id.Contains(q, StringComparison.OrdinalIgnoreCase) && !d.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
@@ -590,7 +595,7 @@ public static class SettingsPanel
     private static RowAction CardRow(string title, string? titleTip, string badge, uint badgeColor, bool open, bool first, bool last)
     {
         var action = RowAction.None;
-        if (ImGui.Selectable(title, open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0))) action = RowAction.Toggle;
+        if (ImGui.Selectable(title, open, ImGuiSelectableFlags.None, new Vector2(MathF.Max(40, ImGui.GetContentRegionAvail().X - TrailingW), 0))) action = RowAction.Toggle;
         Ui.Tip(titleTip);
         ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
         Ui.Badge(badge, badgeColor);
