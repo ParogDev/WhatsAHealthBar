@@ -292,8 +292,11 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             b.Render = e.GetComponent<Render>();
             if (b.LifeComp == null) { b.Why = Why.NoLifeComponent; continue; }
             if (b.Render == null) { b.Why = Why.NoRenderComponent; continue; }
+            // PoE2 boss immune phases are hidden AND can't be damaged (Yama, read live 2026-10-12: IsHidden, the hidden_monster
+            // buff and CannotBeDamaged = 1 together for ~10 s): those keep their bar in the invulnerable look, so a hidden
+            // monster is only dropped here when the invulnerable state is off; otherwise after its stats are read.
             var hidden = e.IsHidden;
-            if (hidden && !hiddenDim) { b.Why = Why.Hidden; continue; }
+            if (hidden && !hiddenDim && !invulnOn) { b.Why = Why.Hidden; continue; }
             var life = b.LifeComp;
             if (b.Dying)
             {
@@ -384,6 +387,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 }
             }
 
+            if (hidden && !hiddenDim && !b.Invulnerable) { b.Why = Why.Hidden; continue; }
+
             // Buffs: status icons, status patches and the DoT's time left, read only when one of those needs them.
             var icons = _renderer.IconsFor(b.Kind) && (b.Kind != BarKind.Minion || Settings.Icons.Kinds.Value == IconKinds.All);
             b.StatusCount = 0;
@@ -406,7 +411,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 look.Life = invulnColor;
                 look.Grey = look.Hatch = true;
             }
-            if (hidden) look.Opacity *= 0.35f;
+            if (hidden && !b.Invulnerable) look.Opacity *= 0.35f;
             b.CullAt = cullOn && !b.CannotBeCulled && b.Kind <= BarKind.Normal ? cull[(int)b.Kind] : 0;
             if (dotPerMin > 0)
             {
@@ -921,7 +926,9 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         IEnumerable<Bar> pick = _bars;
         if (uint.TryParse(q, out var id)) pick = _bars.Where(b => b.Id == id);
         else if (q.Length > 0) pick = _bars.Where(b => (b.Entity?.Path ?? "").Contains(q, StringComparison.OrdinalIgnoreCase) || b.DisplayName.Contains(q, StringComparison.OrdinalIgnoreCase));
-        foreach (var b in pick.OrderBy(b => b.Why == Why.Drawn ? 0 : 1).ThenBy(b => b.Dist).Take(40)) reply.Entities.Add(WhyEntity(b));
+        // Drawn first, then the rest by distance; gone ones (invalid, dead: no fresh distance) last.
+        foreach (var b in pick.OrderBy(b => b.Why == Why.Drawn ? 0 : b.Why is Why.Invalid or Why.Dead or Why.NotClassified ? 2 : 1).ThenBy(b => b.Dist).Take(40))
+            reply.Entities.Add(WhyEntity(b));
         if (reply.Entities.Count == 0 && q.Length > 0) reply.Message = $"no tracked monster or player matches '{q}' (by id, path or name) among {_bars.Count}";
         return JsonConvert.SerializeObject(reply, Json);
     }, WhyName);
