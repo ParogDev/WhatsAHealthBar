@@ -95,7 +95,8 @@ public static class WhyOverlay
             var y = top + 3;
             foreach (var (text, col) in lines) { dl.AddText(new Vector2(left + 4, y), col, text); y += ImGui.CalcTextSize(text).Y; }
 
-            if (buttons >= 24 || key.Length == 0 || rules.Ignored.Contains(key)) continue;
+            // No ignore button on players (a player's path is the class's: ignoring it would hide every player of that class).
+            if (buttons >= 24 || key.Length == 0 || b.Kind is BarKind.Player or BarKind.Self || rules.Ignored.Contains(key)) continue;
             buttons++;
             ImGui.SetNextWindowPos(new Vector2(left, top - 26));
             if (ImGui.Begin($"##whaIgnore{b.Id}", ButtonFlags))
