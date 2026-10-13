@@ -197,8 +197,7 @@ internal static class Ui
         const float w = 38f, h = 20f, r = h * 0.5f;
         var pad = (ImGui.GetFrameHeight() - h) * 0.5f;
         if (pad > 0) cur.Y += pad;
-        ImGui.InvisibleButton(id, new Vector2(w, ImGui.GetFrameHeight()));
-        var changed = ImGui.IsItemClicked();
+        var changed = ImGui.InvisibleButton(id, new Vector2(w, ImGui.GetFrameHeight())); // press and release, like every button
         if (changed) value = !value;
         var dt = ImGui.GetIO().DeltaTime;
         var target = value ? 1f : 0f;

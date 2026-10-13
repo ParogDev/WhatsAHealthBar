@@ -658,11 +658,10 @@ public sealed class BarRenderer
 
     /// <summary>
     /// A plain colored rectangle in the icons' draw command (a window into the atlas's solid block), so it draws over the
-    /// icons and the textured stripes; a quad in the bar batch without the atlas.
+    /// icons. Only called from the icon block, which runs with the atlas loaded.
     /// </summary>
     private void Over(float x0, float y0, float x1, float y1, uint col)
     {
-        if (AtlasId == IntPtr.Zero) { Rect(x0, y0, x1, y1, col); return; }
         if (x1 - x0 < 0.5f || y1 - y0 < 0.5f) return;
         StatusAtlas.SolidUv(out var u0, out var v0, out var u1, out var v1);
         Icon(x0, y0, x1, y1, u0, v0, u1, v1, col);
@@ -806,7 +805,7 @@ public sealed class BarRenderer
     {
         var icons = AtlasId != IntPtr.Zero ? _iconCount : 0;
         LastQuads = _quadCount;
-        LastIcons = AtlasId != IntPtr.Zero ? _iconsDrawn : 0;
+        LastIcons = _iconsDrawn;
         if (_quadCount > 0 || icons > 0)
         {
             var why = CheckLayout(dl, _quadCount + icons);

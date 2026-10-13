@@ -306,13 +306,13 @@ public sealed class StateSettings
     [Menu("Invulnerable color", "The fill color while invulnerable")]
     public ColorNode InvulnerableColor { get; set; } = Color.FromArgb(255, 150, 150, 160);
 
-    [Menu("Cullable", "Culling strike kills at a life % by rarity (PoE2: normal 35, magic 20, rare 10, unique 5, from poe2db). " +
-                      "Notch: a mark at the threshold. Tint: the fill changes color once under it. Hide: no bar under it")]
+    [Menu("Cullable", "Culling strike kills at a life % by rarity (PoE2: normal 30, magic 20, rare 10, unique 5; normal confirmed " +
+                      "in play 2026-10-12). Notch: a mark at the threshold. Tint: the fill changes color once under it. Hide: no bar under it")]
     public ListNode Cullable { get; set; } = new()
         { Values = new() { StateModes.Off, StateModes.Notch, StateModes.NotchTint, StateModes.Hide }, Value = StateModes.NotchTint };
 
     [Menu("Cull % normal")]
-    public RangeNode<int> CullNormal { get; set; } = new(35, 0, 60);
+    public RangeNode<int> CullNormal { get; set; } = new(30, 0, 60);
 
     [Menu("Cull % magic")]
     public RangeNode<int> CullMagic { get; set; } = new(20, 0, 60);

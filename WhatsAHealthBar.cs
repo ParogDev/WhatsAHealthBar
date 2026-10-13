@@ -700,7 +700,15 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
     internal BarRenderer Renderer => _renderer;
     internal Random Rng => _rng;
-    internal float ResolutionScale => _resolutionScale;
+    /// <summary>Read from the window now (Tick's cached value stands still while the plugin is disabled, and the panel draws then too).</summary>
+    internal float ResolutionScale
+    {
+        get
+        {
+            var h = GameController.Window.GetWindowRectangleReal().Height;
+            return h > 0 ? h / 1440f : 1;
+        }
+    }
     internal string? Suppressed => _suppressed;
     internal string? AtlasProblem => _atlasProblem;
     internal bool Previewing => _now < _previewUntil;
@@ -904,7 +912,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 // The same statuses in the same order each pass: a timer still running keeps draining (the icon's time
                 // line and seconds), one that ran out is reapplied with a fresh 3-7 s, as the game would.
                 var k = b.StatusCount;
-                var until = k < oldCount && hits[k].Rule == rule && hits[k].Until > now ? hits[k].Until : now + 3 + (rule % 5);
+                var same = k < oldCount && (uint)hits[k].Rule < (uint)L.Statuses.Length && L.Statuses[hits[k].Rule].Id == id; // by id: an edit renumbers the rules
+                var until = same && hits[k].Until > now ? hits[k].Until : now + 3 + (rule % 5);
                 hits[b.StatusCount++] = new StatusHit { Rule = rule, Stacks = id == "poison" ? 5 : 1, Until = until };
                 L.StatusPatches[rule]?.ApplyTo(ref look);
             }

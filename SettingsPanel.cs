@@ -85,11 +85,15 @@ public static class SettingsPanel
             ImGui.EndTabBar();
         }
         Ui.PopStyle();
-        // Compiled here and now (not on the next Tick): the samples, the problems badge and the bridge must see the edit
-        // even while the plugin is disabled and gets no Tick. The samples re-resolve their statuses against the new rules
-        // on the next frame (their rule indices shifted).
-        if (changed) { plugin.CompileLayers(); Samples.Invalidate(); }
+        // Compiled here (not on the next Tick): the samples, the problems badge and the bridge must see the edit even
+        // while the plugin is disabled and gets no Tick; but once the mouse lets go, not on every frame of a slider or
+        // color drag (a compile renumbers the rules and makes every bar re-read its stats). The samples re-resolve their
+        // statuses against the new rules on the next frame.
+        _layersPending |= changed;
+        if (_layersPending && !ImGui.IsAnyItemActive()) { _layersPending = false; plugin.CompileLayers(); Samples.Invalidate(); }
     }
+
+    private static bool _layersPending;
 
     // ---- Header: name, enable, live status, preview ----
 
@@ -609,7 +613,8 @@ public static class SettingsPanel
     private static RowAction CardRow(string title, string? titleTip, string badge, uint badgeColor, bool open, bool first, bool last)
     {
         var action = RowAction.None;
-        if (ImGui.Selectable(title, open, ImGuiSelectableFlags.None, new Vector2(MathF.Max(40, ImGui.GetContentRegionAvail().X - TrailingW), 0))) action = RowAction.Toggle;
+        // ###row: the user's text is the label only, never the id (a status labelled "Buff" must not share the segmented button's).
+        if (ImGui.Selectable(title + "###row", open, ImGuiSelectableFlags.None, new Vector2(MathF.Max(40, ImGui.GetContentRegionAvail().X - TrailingW), 0))) action = RowAction.Toggle;
         Ui.Tip(titleTip);
         ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
         Ui.Badge(badge, badgeColor);
