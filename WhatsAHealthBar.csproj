@@ -35,4 +35,9 @@
          from its folder, or next to the DLL when built with MSBuild. The source sheets in textures/source are not shipped. -->
     <None Update="textures\status-atlas.png" CopyToOutputDirectory="PreserveNewest" Link="textures\status-atlas.png" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Hexile.BridgeExports source generator: [BridgeExport] -> BridgeExports.Register / BridgeExports.Names at compile time.
+         Vendored (built from the scaffolding repo's tools/generators) so this repo builds on its own. -->
+    <Analyzer Include="Analyzers\Hexile.BridgeExports.Generator.dll" />
+  </ItemGroup>
 </Project>
