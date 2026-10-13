@@ -2298,7 +2298,7 @@ internal sealed class SettingsMenu
                 e.Leaf = Leaf.String;
                 e.GetString = Expression.Lambda<Func<object, object?, int, string?>>(access, o, k, i).Compile();
                 if (settable) { var v = Expression.Parameter(typeof(string), "v"); e.SetString = Expression.Lambda<Action<object, object?, int, string?>>(Expression.Assign(access, v), o, k, i, v).Compile(); }
-                var first = e.Choices is { Length: > 0 } ch ? ch[0] : "";
+                var first = e.Choices is { Length: > 0 } ch ? ch[0] : e.IsHex ? "#FFFFFFFF" : "";
                 e.New = () => first;
             }
             else if (inner.IsEnum)
