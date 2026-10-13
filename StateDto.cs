@@ -2,6 +2,16 @@ using System.Collections.Generic;
 
 namespace WhatsAHealthBar;
 
+/// <summary>The live numbers the settings panel's Debug tab shows (filled by WhatsAHealthBar.Snapshot, formatted at 4 Hz).</summary>
+public struct PanelNumbers
+{
+    public int Tracked, Wanted, Drawn, PeakDrawn, WithStatuses, Invulnerable, WithDot, Quads, Icons, LayersVersion;
+    public double TickUs, TickMaxUs, RenderUs, RenderMaxUs, ClassifyUs, BuildUs, FlushUs, LagMs, JitterShownPx;
+    public string RenderPath;
+    public string? PoolProblem;
+    public bool Previewing;
+}
+
 /// <summary>What WhatsAHealthBar.GetState answers (PluginBridge, read by the MCP server's healthbars_state and the control center).</summary>
 public sealed class HealthBarStateDto
 {

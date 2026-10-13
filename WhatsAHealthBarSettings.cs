@@ -260,7 +260,10 @@ public sealed class StatusIconSettings
     public ListNode BuffAnchor { get; set; } = new() { Values = new(Anchors.All), Value = Anchors.Right };
 
     [Menu("Icon size (px)", "At 1440p; scales with the bars")]
-    public RangeNode<int> Size { get; set; } = new(22, 8, 64);
+    public RangeNode<int> Size { get; set; } = new(26, 8, 64);
+
+    [Menu("Backing plate", "A dark rounded slab under each icon with a thin ring in the status's color, so icons read on any background")]
+    public ToggleNode Plate { get; set; } = new(true);
 
     [Menu("Columns", "Icons per row before wrapping")]
     public RangeNode<int> Columns { get; set; } = new(6, 1, 12);

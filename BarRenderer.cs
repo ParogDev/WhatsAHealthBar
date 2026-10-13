@@ -38,7 +38,7 @@ public sealed class BarRenderer
     public bool CullHide { get; private set; }
     private uint _cullColor, _dotColor;
     private bool _dot;
-    private bool _icons, _showStacks, _showDuration;
+    private bool _icons, _showStacks, _showDuration, _iconPlate;
     private BarKind _iconsUpTo;
     private int _iconCols, _iconMax;
     private float _iconSize;
@@ -151,6 +151,7 @@ public sealed class BarRenderer
         _iconMax = Math.Max(1, ic.MaxIcons.Value);
         _showStacks = ic.ShowStacks;
         _showDuration = ic.ShowDuration;
+        _iconPlate = ic.Plate;
         _debuffAnchor = (byte)Math.Max(0, Array.IndexOf(Anchors.All, ic.DebuffAnchor.Value));
         _buffAnchor = (byte)Math.Max(0, Array.IndexOf(Anchors.All, ic.BuffAnchor.Value));
         var pools = look.Pools.Value;
@@ -284,11 +285,14 @@ public sealed class BarRenderer
         var y1 = y0 + h;
         var r = Math.Min(_rounding, (int)(h * 0.5f));
 
-        if (_outlineW > 0) Round(x0 - _outlineW, y0 - _outlineW, x1 + _outlineW, y1 + _outlineW, Mul(look.Outline, a), r > 0 ? r + _outlineW : 0, true, true);
+        // Under its cull threshold (Notch and tint): the fill and the outline take the cull color, so the whole bar says
+        // "one hit".
+        var cullable = b.CullAt > 0 && !b.Dying && b.MaxHp > 0 && b.Shown[Bar.Life] <= b.CullAt;
+        var outline = cullable && _cullTint ? _cullColor : look.Outline;
+        if (_outlineW > 0) Round(x0 - _outlineW, y0 - _outlineW, x1 + _outlineW, y1 + _outlineW, Mul(outline, a), r > 0 ? r + _outlineW : 0, true, true);
         Round(x0, y0, x1, y1, Mul(look.Bg, a), r, true, true);
 
         var life = look.Life; var es = look.Es; var ward = look.Ward;
-        var cullable = b.CullAt > 0 && !b.Dying && b.MaxHp > 0 && b.Shown[Bar.Life] <= b.CullAt;
         if (cullable && _cullTint) life = _cullColor;
         if (look.Grey) { life = Grey(life); es = Grey(es); ward = Grey(ward); }
         if (_pulse > 0 && b.Kind <= BarKind.Rare && !b.Dying && b.MaxHp > 0 && b.Shown[Bar.Life] * 100 < _pulse)
@@ -354,7 +358,8 @@ public sealed class BarRenderer
             if (b.Veil[Bar.Life] > 0.002f) spillMax = Spill(spillX, y0, y1, w, life, a, b.Veil[Bar.Life]);
         }
 
-        // Damage over time still to come: a dark hatched chunk at the life fill's end, as wide as the predicted loss.
+        // Damage over time still to come: a dark, finely hatched chunk at the life fill's end, as wide as the predicted loss,
+        // with a light edge where the fill will end up ("this much is already gone").
         if (_dot && b.DotLossShown > 0 && !float.IsNaN(_lifeFill) && b.Max[Bar.Life] > 0)
         {
             var lw = _lifeRW * MathF.Min(1, b.DotLossShown / b.Max[Bar.Life]);
@@ -362,11 +367,12 @@ public sealed class BarRenderer
             if (_lifeFill - cx0 >= 1)
             {
                 Rect(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(_dotColor, a));
-                Hatch(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(0xFF000000, a * 0.45f), 4);
+                Hatch(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(0xFFFFFFFF, a * 0.16f), StatusAtlas.HatchFine);
+                if (cx0 > _lifeRX0 + 1) Rect(cx0, _lifeY0, cx0 + 1, _lifeY1, Mul(Lerp(life, 0xFFFFFFFF, 0.6f), a * 0.9f));
             }
         }
-        // Invulnerable (or a patch asking for it): dark diagonal stripes across the whole bar.
-        if (look.Hatch) Hatch(x0, y0, x1, y1, Mul(0xFF000000, a * 0.4f), 6);
+        // Invulnerable (or a patch asking for it): light diagonal stripes across the whole bar, a shield rather than a wound.
+        if (look.Hatch) Hatch(x0, y0, x1, y1, Mul(0xFFFFFFFF, a * 0.2f), StatusAtlas.HatchCoarse);
 
         // Shading and gloss over the whole bar (a glass tube): dark from mid to bottom, white from top to mid.
         var inset = r > 0 ? 1 : 0;
@@ -389,8 +395,13 @@ public sealed class BarRenderer
 
         if (_cullNotch && b.CullAt > 0 && b.MaxHp > 0)
         {
+            // A notch at the threshold: a bright post standing 2 px proud of the bar above and below, dark-edged so it reads
+            // on any fill; in the cull color once the fill is under it.
             var x = MathF.Round(lifeX0 + (lifeX1 - lifeX0) * b.CullAt);
-            Rect(x, y0 - 1, x + 1, y1 + 1, Mul(cullable ? _cullColor : 0xFFFFFFFF, a * 0.9f));
+            var nw = h >= 12 ? 2 : 1;
+            var c = cullable ? _cullColor : 0xFFFFFFFF;
+            Rect(x - 1, y0 - 2 - _outlineW, x + nw + 1, y1 + 2 + _outlineW, Mul(0xFF000000, a * 0.55f));
+            Rect(x, y0 - 2 - _outlineW, x + nw, y1 + 2 + _outlineW, Mul(c, a * 0.95f));
         }
 
         // The sum: all pools against their normal maxima, as a thin line under the bar; past 100% (overfull or a granted
@@ -498,8 +509,10 @@ public sealed class BarRenderer
             maxScale = MathF.Max(maxScale, Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
         }
         if (n == 0) return 0;
-        const float gap = 2;
-        var cell = MathF.Round(_iconSize * maxScale);
+        // With plates, each cell is the icon plus its plate's 2 px rim; the gap keeps neighbouring rims apart.
+        var rim = _iconPlate ? 2f : 0f;
+        var gap = _iconPlate ? 3f : 2f;
+        var cell = MathF.Round(_iconSize * maxScale) + 2 * rim;
         var cols = Math.Min(_iconCols, n);
         var rows = (n + _iconCols - 1) / _iconCols;
         var gridW = cols * cell + (cols - 1) * gap;
@@ -511,7 +524,7 @@ public sealed class BarRenderer
             case 2: gx = left - gap - gridW; gy = y0; break;                             // left
             default: gx = rightX + gap + 2; gy = y0; break;                              // right
         }
-        var fs = MathF.Max(8, cell * 0.55f);
+        var fs = MathF.Max(10, MathF.Round((cell - 2 * rim) * 0.6f));
         var k = 0;
         for (var i = 0; i < b.StatusCount && k < n; i++)
         {
@@ -526,7 +539,20 @@ public sealed class BarRenderer
             var ix = MathF.Round(gx + col * (cell + gap) + (cell - size) * 0.5f);
             var iy = MathF.Round(cy + (cell - size) * 0.5f);
             var icon = L.StatusIcons[rule];
-            var tint = Mul(L.StatusTints[rule], a);
+            var tintFull = L.StatusTints[rule];
+            var tint = Mul(tintFull, a);
+            if (_iconPlate)
+            {
+                // The plate: a dark rounded slab under the icon (so a bright glyph reads on sky, snow or fire) with a thin
+                // ring in the status's own color; the quads go into the bar batch, under the icons.
+                float px0 = ix - rim, py0 = iy - rim, px1 = ix + size + rim, py1 = iy + size + rim;
+                Round(px0, py0, px1, py1, Mul(0xFF0E0C12, a * 0.86f), 3, true, true);
+                var ring = Mul(tintFull, a * 0.45f);
+                Rect(px0 + 1, py0, px1 - 1, py0 + 1, ring);
+                Rect(px0 + 1, py1 - 1, px1 - 1, py1, ring);
+                Rect(px0, py0 + 1, px0 + 1, py1 - 1, ring);
+                Rect(px1 - 1, py0 + 1, px1, py1 - 1, ring);
+            }
             switch (L.StatusBadges[rule])
             {
                 case 1: // gem: icon baked on its badge
@@ -545,22 +571,34 @@ public sealed class BarRenderer
                     Icon(ix, iy, ix + size, iy + size, u0, v0, u1, v1, tint);
                     break;
             }
+            // Time left: a thin line along the icon's foot in the status color, full at 8 s and draining to nothing, the
+            // same language as the bar; the seconds as text above it when asked for.
+            if (hit.Until > 0)
+            {
+                var remaining = (float)(hit.Until - now);
+                if (remaining > 0)
+                {
+                    var frac = MathF.Min(1, remaining / 8f);
+                    var lw = MathF.Max(1, MathF.Round((size - 2) * frac));
+                    Rect(ix + 1, iy + size - 2 + rim, ix + 1 + lw, iy + size + rim, Mul(tintFull, a * 0.9f));
+                    if (_showDuration)
+                    {
+                        var left10 = Math.Min((int)(remaining * 10), Tenths.Length - 1);
+                        var s = Tenths[left10];
+                        var tw = LabelWidth(s) * fs / _fontSize;
+                        TextAt(new Vector2(MathF.Round(ix + (size - tw) * 0.5f), MathF.Round(iy + size - fs - 1)), Mul(0xFFFFFFFF, a), s, fs);
+                    }
+                }
+            }
             if (_showStacks && hit.Stacks > 1)
             {
+                // Stacks in a small dark pill on the icon's top-right corner, so "5" never vanishes into the glyph.
                 var s = Numbers[Math.Min(hit.Stacks, Numbers.Length - 1)];
-                var tw = LabelWidth(s) * fs / _fontSize;
-                var p = new Vector2(MathF.Round(ix + size - tw + 2), MathF.Round(iy - 2));
-                TextAt(p, Mul(0xFFFFFFFF, a), s, fs);
-            }
-            if (_showDuration && hit.Until > 0)
-            {
-                var left10 = (int)((hit.Until - now) * 10);
-                if (left10 > 0)
-                {
-                    var s = Tenths[Math.Min(left10, Tenths.Length - 1)];
-                    var tw = LabelWidth(s) * fs / _fontSize;
-                    TextAt(new Vector2(MathF.Round(ix + (size - tw) * 0.5f), MathF.Round(iy + size - fs * 0.35f)), Mul(0xFFFFFFFF, a), s, fs);
-                }
+                var tw = MathF.Round(LabelWidth(s) * fs / _fontSize);
+                var ph = MathF.Round(fs + 2);
+                float sx1 = ix + size + rim, sy0 = iy - rim - 1, sx0 = sx1 - tw - 5;
+                Round(sx0, sy0, sx1, sy0 + ph, Mul(0xFF0E0C12, a * 0.92f), 2, true, true);
+                TextAt(new Vector2(sx0 + 3, MathF.Round(sy0 + 1)), Mul(0xFFFFFFFF, a), s, fs);
             }
             k++;
         }
@@ -586,11 +624,27 @@ public sealed class BarRenderer
         return a;
     }
 
-    /// <summary>Dark diagonal stripes (2 px steps) across a rectangle: invulnerable bars and the damage-over-time chunk.</summary>
-    private void Hatch(float x0, float y0, float x1, float y1, uint col, int period)
+    /// <summary>
+    /// Diagonal stripes across a rectangle (invulnerable bars, the damage-over-time chunk): windows into the atlas's tiling
+    /// hatch cell, one textured quad per 64 px of width, drawn 1:1 so the stripes stay crisp and seamless. Without the
+    /// atlas, 2 px steps as quads (a 150 x 16 bar is ~220 of them; the textured path is 3).
+    /// </summary>
+    private void Hatch(float x0, float y0, float x1, float y1, uint col, int pattern)
     {
-        var h = (int)(y1 - y0);
+        var h = y1 - y0;
         if (h < 2 || x1 - x0 < 1) return;
+        if (AtlasId != IntPtr.Zero)
+        {
+            var ch = MathF.Min(h, StatusAtlas.Cell);
+            for (var x = x0; x < x1; x += StatusAtlas.Cell)
+            {
+                var cw = MathF.Min(x1 - x, StatusAtlas.Cell);
+                StatusAtlas.HatchUv(pattern, cw, ch, out var u0, out var v0, out var u1, out var v1);
+                Icon(x, y0, x + cw, y0 + ch, u0, v0, u1, v1, col);
+            }
+            return;
+        }
+        var period = pattern == StatusAtlas.HatchFine ? 4 : 8;
         for (var sx = x0 - h; sx < x1; sx += period)
             for (var k = 0; k < h; k += 2)
             {
@@ -743,13 +797,15 @@ public sealed class BarRenderer
     /// _OwnerName, _VtxWritePtr, _IdxWritePtr) and checked against the public view before every write; if an ImGui update
     /// moved them, the quads go through AddRectFilledMultiColor instead and <see cref="Path"/> says why.
     /// </summary>
-    public void Flush(ImDrawListPtr dl)
+    /// <param name="record">False for a batch outside the frame's own (the settings panel's sample bars): the state's
+    /// quad and icon counters keep the frame's numbers.</param>
+    public void Flush(ImDrawListPtr dl, bool record = true)
     {
-        LastQuads = _quadCount;
-        LastIcons = AtlasId != IntPtr.Zero ? _iconCount : 0;
-        if (_quadCount > 0 || LastIcons > 0)
+        var icons = AtlasId != IntPtr.Zero ? _iconCount : 0;
+        if (record) { LastQuads = _quadCount; LastIcons = icons; }
+        if (_quadCount > 0 || icons > 0)
         {
-            var why = CheckLayout(dl, _quadCount + LastIcons);
+            var why = CheckLayout(dl, _quadCount + icons);
             if (why != null) Fallback(dl, why);
             else
             {
@@ -774,7 +830,7 @@ public sealed class BarRenderer
                     Commit(dl, n, vi);
                     done += n;
                 }
-                if (LastIcons > 0)
+                if (icons > 0)
                 {
                     // The icons: one more draw command, bound to the status atlas instead of the font atlas.
                     dl.PushTextureID(AtlasId);
@@ -882,7 +938,8 @@ public sealed class BarRenderer
             ref var q = ref _quads[i];
             dl.AddRectFilledMultiColor(new Vector2(q.X0, q.Y0), new Vector2(q.X1, q.Y1), q.C0, q.C1, q.C2, q.C3);
         }
-        for (var i = 0; i < LastIcons; i++)
+        if (AtlasId == IntPtr.Zero) return;
+        for (var i = 0; i < _iconCount; i++)
         {
             ref var q = ref _iconQuads[i];
             dl.AddImage(AtlasId, new Vector2(q.X0, q.Y0), new Vector2(q.X1, q.Y1), new Vector2(q.U0, q.V0), new Vector2(q.U1, q.V1), q.Col);
@@ -966,7 +1023,7 @@ public sealed class BarRenderer
     private void TextAt(Vector2 pos, uint col, string text, float size)
     {
         if (_textCount + 2 > _texts.Length) Array.Resize(ref _texts, _texts.Length * 2);
-        if (_textShadow) _texts[_textCount++] = new TextItem { Pos = pos + Vector2.One, Col = Mul(0xFF000000, (col >> 24) / 255f * 0.85f), Text = text, Size = size };
+        if (_textShadow) _texts[_textCount++] = new TextItem { Pos = pos + Vector2.One, Col = Mul(0xFF000000, (col >> 24) / 255f * 0.95f), Text = text, Size = size };
         _texts[_textCount++] = new TextItem { Pos = pos, Col = col, Text = text, Size = size };
     }
 

@@ -582,7 +582,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>The life the running damage over time will still take: rate x time left, ES first when it goes through ES, capped at life.</summary>
-    private static void DotLoss(Bar b, double now)
+    internal static void DotLoss(Bar b, double now)
     {
         if (b.DotRate <= 0 || b.DotUntil <= now) { b.DotLossShown = 0; return; }
         var loss = b.DotRate * (float)(b.DotUntil - now) - (b.DotThroughEs ? b.Cur[Bar.Es] : 0);
@@ -686,10 +686,37 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         if (inFront && _active && Settings.Debug.WhyOverlay) WhyOverlay.Draw(this, _bars, Settings);
     }
 
-    public override void DrawSettings()
+    /// <summary>
+    /// The custom panel (SettingsPanel.cs) draws every [Menu] node itself, in tabs, with the lists the nodes can't hold;
+    /// the base drawer isn't called, so nothing is drawn twice. The nodes stay [Menu] nodes: the control center edits them by
+    /// reflection and the HUD saves them as before.
+    /// </summary>
+    public override void DrawSettings() => SettingsPanel.Draw(this, Settings);
+
+    // ---- What the settings panel reads and drives (main thread, inside the HUD's menu draw) ----
+
+    internal BarRenderer Renderer => _renderer;
+    internal double Now => _now;
+    internal float Dt => _dt;
+    internal Random Rng => _rng;
+    internal float ResolutionScale => _resolutionScale;
+    internal string? Suppressed => _suppressed;
+    internal string? AtlasProblem => _atlasProblem;
+    internal AnimParams AnimNow() => Anim();
+    internal PoolSim MakeSim(BarKind kind) => Sim(kind, _now);
+    internal void RequestPreview(double seconds, string? focus) => _previewRequests.Enqueue((seconds, focus, 0));
+
+    /// <summary>The live numbers the Debug tab shows (a copy, so the panel formats them at its own rate).</summary>
+    internal void Snapshot(ref PanelNumbers n)
     {
-        base.DrawSettings();
-        SettingsPanel.Draw(this, Settings);
+        n.Tracked = _bars.Count; n.Wanted = _wanted; n.Drawn = _drawList.Count; n.PeakDrawn = _peakDrawn;
+        n.WithStatuses = _withStatuses; n.Invulnerable = _invulnerable; n.WithDot = _withDot;
+        n.TickUs = _tickUs; n.TickMaxUs = Math.Max(_tickMax, _tickMaxNext); n.RenderUs = _renderUs; n.RenderMaxUs = Math.Max(_renderMax, _renderMaxNext);
+        n.ClassifyUs = _classifyUs; n.BuildUs = _buildUs; n.FlushUs = _flushUs;
+        n.Quads = _renderer.LastQuads; n.Icons = _renderer.LastIcons; n.RenderPath = _renderer.Path;
+        n.LagMs = _motion.Lag * 1000; n.JitterShownPx = _motion.JitterShown;
+        n.Previewing = _now < _previewUntil; n.LayersVersion = _layersVersion;
+        n.PoolProblem = _now - _poolProblemAt < 30 ? _poolProblem : null;
     }
 
     internal void Ignore(string pathKey)
@@ -815,7 +842,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>A sample bar's look as classify would resolve it: fake statuses, a DoT on uniques and rares, the immune sample.</summary>
-    private void PreviewLook(Bar b)
+    internal void PreviewLook(Bar b)
     {
         var L = _renderer.Rules;
         var look = _renderer.BaseLook(b.Kind);

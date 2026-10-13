@@ -306,6 +306,21 @@ public static class StatusAtlas
         u0 = x / (float)Width; v0 = 0;
         u1 = (x + Cell) / (float)Width; v1 = Cell / (float)Height;
     }
+
+    /// <summary>The tiling hatch cells (white diagonal stripes on transparent): coarse (8 px period) and fine (4 px).</summary>
+    public const int HatchCoarse = 2, HatchFine = 3;
+
+    /// <summary>
+    /// UVs of a <paramref name="w"/> x <paramref name="h"/> px window into a hatch cell (both at most <see cref="Cell"/>),
+    /// so the pattern draws 1:1 and a run of adjacent windows tiles seamlessly (the cell is a multiple of the period).
+    /// </summary>
+    public static void HatchUv(int row, float w, float h, out float u0, out float v0, out float u1, out float v1)
+    {
+        var x = 2 * Columns * Cell;
+        var y = row * Cell;
+        u0 = x / (float)Width; v0 = y / (float)Height;
+        u1 = (x + MathF.Min(w, Cell)) / Width; v1 = (y + MathF.Min(h, Cell)) / Height;
+    }
 }
 
 /// <summary>
