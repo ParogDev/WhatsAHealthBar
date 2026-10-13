@@ -81,6 +81,75 @@ public sealed class Bar
     public double FirstHitAt;
     public bool Published;
 
+    // ---- Information layers (classify rate unless noted) ----
+    public Stats? StatsComp;
+    public Buffs? BuffsComp;
+    /// <summary>Metadata path without "@level" (overrides, ignore list) and the shown name (abbreviated), read once.</summary>
+    public string PathKey = "", DisplayName = "";
+    /// <summary>Bumped when <see cref="DisplayName"/> changes (the {name} token's signature).</summary>
+    public int NameVersion;
+    public int NameThreshold = -1;
+    /// <summary>RenderName was empty: the path's tail stands in and the name is read again next pass.</summary>
+    public bool NameFromPath;
+    /// <summary>Plugin clock time the bar was last added to the draw list (WhyNotDrawn's drawn flag).</summary>
+    public double DrawnAt = double.NegativeInfinity;
+    /// <summary>The override that matched (-1: none), valid for <see cref="OverrideVersion"/> of the compiled layers.</summary>
+    public int OverrideIndex = -1, OverrideVersion = -1;
+    /// <summary>Kind look, then override, status and state patches.</summary>
+    public BarLook Look;
+    public bool Invulnerable, CannotBeCulled;
+    /// <summary>Life fraction at or under which culling strike kills this monster (0: no threshold).</summary>
+    public float CullAt;
+    /// <summary>Grid distance from the player at the last classify pass.</summary>
+    public float Dist;
+    /// <summary>Why the bar is or isn't drawn, from the last classify pass (or the frame for off-screen / culled-hidden).</summary>
+    public Why Why = Why.NotClassified;
+
+    /// <summary>Statuses found at the last classify pass (icons), up to the array's length.</summary>
+    public StatusHit[]? Statuses;
+    public int StatusCount;
+    /// <summary>The kind shows icons (else the statuses were read for their patches only).</summary>
+    public bool ShowIcons;
+    /// <summary>When stats and buffs were last read (staggered for magic and normal monsters); -1: never.</summary>
+    public double LayersReadAt = double.NegativeInfinity;
+    /// <summary>The compiled rules version the statuses were read against (Rule indices are only valid for it).</summary>
+    public int StatusVersion = -1;
+    /// <summary>A name override was matched while the name was still empty: match again.</summary>
+    public bool OverrideNameEmpty;
+
+    /// <summary>Damage over time: pool loss per second and when the longest running DoT ends (per frame: <see cref="DotLossShown"/>).</summary>
+    public float DotRate, DotLossShown;
+    public double DotUntil;
+    /// <summary>The rate came from the ES-first stat: current ES absorbs that much of the predicted loss before life.</summary>
+    public bool DotThroughEs;
+
+    /// <summary>Damage per second on all pools (an EMA) and the time to kill at that rate (-1: no damage).</summary>
+    public float Dps, Ttk = -1;
+    private int _dpsLastTotal = -1;
+    private double _dpsLastT;
+
+    /// <summary>Data text slots (above, on, below): the last string, its signature, width and the template it came from.</summary>
+    public readonly string?[] SlotText = new string?[3];
+    public readonly long[] SlotSig = new long[3];
+    public readonly float[] SlotWidth = new float[3];
+    public readonly TextTemplate?[] SlotTemplate = new TextTemplate?[3];
+
+    /// <summary>EMA of the combined pool drop, updated at most every 0.1 s (syrairc's DpsMeter), and the time to kill.</summary>
+    public void UpdateDps(double now, float tau)
+    {
+        var total = Total;
+        if (_dpsLastTotal < 0) { _dpsLastTotal = total; _dpsLastT = now; return; }
+        var dt = now - _dpsLastT;
+        if (dt < 0.1) return;
+        var drop = _dpsLastTotal - total;
+        var rate = drop > 0 ? (float)(drop / dt) : 0f;
+        Dps += (float)((1 - Math.Exp(-dt / Math.Max(0.05f, tau))) * (rate - Dps));
+        if (Dps < 1) Dps = 0;
+        Ttk = Dps > 0 && total > 0 ? total / Dps : -1;
+        _dpsLastTotal = total;
+        _dpsLastT = now;
+    }
+
     public int Hp => Cur[Life];
     public int MaxHp => BaseMax[Life];
     public int MaxTotal => Max[Life] + Max[Es] + Max[Ward];
@@ -223,6 +292,22 @@ public sealed class Bar
 
     private static float Ease(float rate, float dt) => 1f - MathF.Exp(-rate * dt);
     private static float MoveTo(float v, float to, float step) => v < to ? MathF.Min(to, v + step) : MathF.Max(to, v - step);
+}
+
+/// <summary>One status icon on a bar: the rule (index into the compiled list), stacks summed over its instances, and when the longest ends.</summary>
+public struct StatusHit
+{
+    public int Rule;
+    public int Stacks;
+    /// <summary>Plugin clock time the status runs out; 0 when it has no timer.</summary>
+    public double Until;
+}
+
+/// <summary>Why a bar is or isn't drawn (the debug overlay and WhatsAHealthBar.WhyNotDrawn).</summary>
+public enum Why : byte
+{
+    Drawn, NotClassified, Invalid, Dead, NoLifeComponent, NoRenderComponent, Hidden, Ignored, Untargetable, KindHidden,
+    TooFar, MinionNotHurt, NormalNotHit, OverrideHidden, StatusHidden, Invulnerable, Cullable, OffScreen, NoPools,
 }
 
 public readonly record struct AnimParams(bool Enabled, bool Trail, double TrailHold, float TrailDrain, bool HitFlash, bool HealGlow,
