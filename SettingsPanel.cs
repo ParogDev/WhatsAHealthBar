@@ -42,6 +42,9 @@ public static class SettingsPanel
     public static void Draw(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
     {
         Ui.Index(s);
+        // The HUD skips a disabled plugin's Tick and Render, so the panel runs on ImGui's clock and prepares the renderer
+        // itself: the samples animate and edits show whether the plugin is on or off.
+        plugin.Renderer.Prepare(s, plugin.ResolutionScale);
         Ui.PushStyle();
         Header(plugin, s);
         var changed = false;
@@ -82,7 +85,7 @@ public static class SettingsPanel
         Ui.Toggle(s.Enable, "Whats A Health Bar");
         ImGui.SameLine(0, 14);
         Live.Refresh(plugin);
-        var sup = plugin.Suppressed;
+        var sup = s.Enable ? plugin.Suppressed : "disabled";
         if (sup == null) Ui.Badge(Live.DrawnBadge, Ui.Ok);
         else Ui.Badge(sup, Ui.Muted, outline: true);
         Ui.Tip(sup == null ? "Bars drawn last frame" : "Why no bars are drawn right now");
@@ -266,7 +269,9 @@ public static class SettingsPanel
             {
                 var d = _searchHits[i];
                 ImGui.PushID(i);
-                var listed = plugin.Rules.StatusById.ContainsKey(d.Id);
+                // Against the list itself, not the compiled rules: those are rebuilt by Tick, which a disabled plugin doesn't get.
+                var listed = false;
+                for (var j = 0; j < s.Statuses.Count && !listed; j++) listed = s.Statuses[j].Id == d.Id;
                 if (listed) { Ui.Badge("listed", Ui.Faint); }
                 else if (ImGui.SmallButton("Add"))
                 {
@@ -474,7 +479,7 @@ public static class SettingsPanel
             var dl = ImGui.GetWindowDrawList();
             var dot = ImGui.GetCursorScreenPos() + new Vector2(5, ImGui.GetFrameHeight() * 0.5f);
             dl.AddCircleFilled(dot, 4, o.Pattern.Length == 0 ? Ui.Faint : err == null ? Ui.Ok : Ui.Danger, 12);
-            ImGui.Dummy(new Vector2(12, 0));
+            ImGui.Dummy(new Vector2(12, ImGui.GetFrameHeight()));
             Ui.Tip(o.Pattern.Length == 0 ? "No pattern yet: matches nothing" : err ?? "Valid regex");
             ImGui.SameLine();
             if (ImGui.Selectable(o.Name.Length > 0 ? o.Name : "(unnamed)", open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0)))
@@ -667,11 +672,11 @@ public static class SettingsPanel
         private double _at = -1;
         private int _problems = -1, _drawn = -1;
         private PanelNumbers _n;
-        private readonly Dictionary<TextNode, (string src, string text, double at)> _samples = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<TextNode, (string src, TextTemplate template, string text, double at)> _samples = new(ReferenceEqualityComparer.Instance);
 
         public void Refresh(WhatsAHealthBar plugin)
         {
-            var now = plugin.Now;
+            var now = ImGui.GetTime();
             var problems = plugin.Rules.Problems.Count;
             if (problems != _problems) { _problems = problems; ProblemsBadge = problems == 1 ? "1 problem" : I(problems) + " problems"; }
             if (now - _at < 0.25 && _at >= 0) return;
@@ -696,10 +701,12 @@ public static class SettingsPanel
         public string Sample(TextNode node, Bar sample)
         {
             var src = node.Value ?? "";
-            if (_samples.TryGetValue(node, out var c) && ReferenceEquals(c.src, src) && _at - c.at < 0.5) return c.text;
-            var text = src.Length == 0 ? "(nothing)" : TextTemplate.Parse(src).Build(sample);
+            var same = _samples.TryGetValue(node, out var c) && ReferenceEquals(c.src, src);
+            if (same && _at - c.at < 0.5) return c.text;
+            var template = same ? c.template : TextTemplate.Parse(src);
+            var text = template.IsEmpty ? "(nothing)" : template.Build(sample);
             if (text.Length == 0) text = "(nothing)";
-            _samples[node] = (src, text, _at);
+            _samples[node] = (src, template, text, _at);
             return text;
         }
 
@@ -736,14 +743,15 @@ public static class SettingsPanel
         {
             var sim = Sim(plugin, slot, kind);
             var b = sim.Bar;
-            var now = plugin.Now;
+            // ImGui's clock, not the plugin's: a disabled plugin gets no Tick, and the panel must still show its samples.
+            var now = ImGui.GetTime();
             if (_stepped[slot] != now)
             {
                 // Once per HUD frame: the simulated pools, the look (statuses, DoT, cull threshold) at 10 Hz, the animation.
                 var dt = _stepped[slot] > 0 ? (float)Math.Clamp(now - _stepped[slot], 0, 0.1) : 0f;
                 _stepped[slot] = now;
                 sim.Step(now, dt, plugin.Rng);
-                if (now - _looked[slot] >= 0.1) { _looked[slot] = now; plugin.PreviewLook(b); }
+                if (now - _looked[slot] >= 0.1) { _looked[slot] = now; plugin.PreviewLook(b, now); }
                 b.UpdateDps(now, plugin.Settings.Text.DpsWindow.Value);
                 WhatsAHealthBar.DotLoss(b, now);
                 b.Animate(now, dt, plugin.AnimNow());

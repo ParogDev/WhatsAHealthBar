@@ -571,8 +571,9 @@ public sealed class BarRenderer
                     Icon(ix, iy, ix + size, iy + size, u0, v0, u1, v1, tint);
                     break;
             }
-            // Time left: a thin line along the icon's foot in the status color, full at 8 s and draining to nothing, the
-            // same language as the bar; the seconds as text above it when asked for.
+            // Time left: a thin line just under the icon in the status color (on the plate's rim, or below a bare icon:
+            // the bar batch draws before the icon image, so nothing may sit inside the icon's rectangle), full at 8 s
+            // and draining to nothing, the same language as the bar; the seconds as text above it when asked for.
             if (hit.Until > 0)
             {
                 var remaining = (float)(hit.Until - now);
@@ -580,7 +581,7 @@ public sealed class BarRenderer
                 {
                     var frac = MathF.Min(1, remaining / 8f);
                     var lw = MathF.Max(1, MathF.Round((size - 2) * frac));
-                    Rect(ix + 1, iy + size - 2 + rim, ix + 1 + lw, iy + size + rim, Mul(tintFull, a * 0.9f));
+                    Rect(ix + 1, iy + size, ix + 1 + lw, iy + size + 2, Mul(tintFull, a * 0.9f));
                     if (_showDuration)
                     {
                         var left10 = Math.Min((int)(remaining * 10), Tenths.Length - 1);
@@ -592,13 +593,15 @@ public sealed class BarRenderer
             }
             if (_showStacks && hit.Stacks > 1)
             {
-                // Stacks in a small dark pill on the icon's top-right corner, so "5" never vanishes into the glyph.
+                // Stacks in a small dark pill hung off the icon's top-right corner (its bottom one pixel into the icon,
+                // the rest above it, since the icon image would cover a pill drawn inside its rectangle), so "5" never
+                // vanishes into the glyph; the text comes last of all, over everything.
                 var s = Numbers[Math.Min(hit.Stacks, Numbers.Length - 1)];
                 var tw = MathF.Round(LabelWidth(s) * fs / _fontSize);
                 var ph = MathF.Round(fs + 2);
-                float sx1 = ix + size + rim, sy0 = iy - rim - 1, sx0 = sx1 - tw - 5;
-                Round(sx0, sy0, sx1, sy0 + ph, Mul(0xFF0E0C12, a * 0.92f), 2, true, true);
-                TextAt(new Vector2(sx0 + 3, MathF.Round(sy0 + 1)), Mul(0xFFFFFFFF, a), s, fs);
+                float sx1 = ix + size + rim, sy1 = iy + 1, sx0 = sx1 - tw - 5;
+                Round(sx0, sy1 - ph, sx1, sy1, Mul(0xFF0E0C12, a * 0.92f), 2, true, true);
+                TextAt(new Vector2(sx0 + 3, MathF.Round(sy1 - ph + 1)), Mul(0xFFFFFFFF, a), s, fs);
             }
             k++;
         }
@@ -635,12 +638,15 @@ public sealed class BarRenderer
         if (h < 2 || x1 - x0 < 1) return;
         if (AtlasId != IntPtr.Zero)
         {
-            var ch = MathF.Min(h, StatusAtlas.Cell);
-            for (var x = x0; x < x1; x += StatusAtlas.Cell)
+            for (var y = y0; y < y1; y += StatusAtlas.Cell)
             {
-                var cw = MathF.Min(x1 - x, StatusAtlas.Cell);
-                StatusAtlas.HatchUv(pattern, cw, ch, out var u0, out var v0, out var u1, out var v1);
-                Icon(x, y0, x + cw, y0 + ch, u0, v0, u1, v1, col);
+                var ch = MathF.Min(y1 - y, StatusAtlas.Cell);
+                for (var x = x0; x < x1; x += StatusAtlas.Cell)
+                {
+                    var cw = MathF.Min(x1 - x, StatusAtlas.Cell);
+                    StatusAtlas.HatchUv(pattern, cw, ch, out var u0, out var v0, out var u1, out var v1);
+                    Icon(x, y, x + cw, y + ch, u0, v0, u1, v1, col);
+                }
             }
             return;
         }
@@ -806,10 +812,10 @@ public sealed class BarRenderer
         if (_quadCount > 0 || icons > 0)
         {
             var why = CheckLayout(dl, _quadCount + icons);
-            if (why != null) Fallback(dl, why);
+            if (why != null) Fallback(dl, why, record);
             else
             {
-                Path = "batched";
+                if (record) Path = "batched";
                 var uv = ImGui.GetIO().Fonts.TexUvWhitePixel;
                 int u = BitConverter.SingleToInt32Bits(uv.X), v = BitConverter.SingleToInt32Bits(uv.Y);
                 for (var done = 0; done < _quadCount;)
@@ -930,9 +936,9 @@ public sealed class BarRenderer
         i += VertInts;
     }
 
-    private void Fallback(ImDrawListPtr dl, string why)
+    private void Fallback(ImDrawListPtr dl, string why, bool record)
     {
-        if (!ReferenceEquals(_fallbackWhy, why)) { _fallbackWhy = why; Path = "fallback: " + why; }
+        if (record && !ReferenceEquals(_fallbackWhy, why)) { _fallbackWhy = why; Path = "fallback: " + why; }
         for (var i = 0; i < _quadCount; i++)
         {
             ref var q = ref _quads[i];

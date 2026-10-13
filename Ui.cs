@@ -21,17 +21,16 @@ internal static class Ui
     // Palette, ImGui ABGR. Amber accent (the rare's gold, a step warmer), so red stays free for life and errors.
     public const uint Accent = 0xFF5CB8F5, AccentDim = 0xFF3C78A0, AccentFaint = 0x303C78A0;
     public const uint Text = 0xFFE1E6E8, Muted = 0xFF9A9296, Faint = 0xFF5E585C;
-    public const uint Danger = 0xFF646EFF, Ok = 0xFF78DC6E, Warn = 0xFF4CC8F0;
+    public const uint Danger = 0xFF646EFF, Ok = 0xFF78DC6E;
     public const uint CardBg = 0xF216141A, CardBorder = 0xFF2E2A33, Well = 0xFF0C0B0F;
-
-    public static readonly Vector4 AccentV = V(Accent), AccentDimV = V(AccentDim);
 
     /// <summary>Width of the label column; the control takes the rest up to <see cref="ControlW"/>.</summary>
     public const float LabelW = 196f;
     public static float ControlW { get; private set; } = 220f;
 
     public static Vector4 V(uint abgr) => new((abgr & 0xFF) / 255f, ((abgr >> 8) & 0xFF) / 255f, ((abgr >> 16) & 0xFF) / 255f, (abgr >> 24) / 255f);
-    public static uint U(Vector4 v) => ImGui.GetColorU32(v);
+    /// <summary>Packed ABGR as given (not GetColorU32, which would multiply the alpha by the style's, e.g. inside BeginDisabled).</summary>
+    public static uint U(Vector4 v) => ImGui.ColorConvertFloat4ToU32(v);
     public static uint Alpha(uint abgr, float a) => (abgr & 0x00FFFFFF) | (uint)Math.Clamp((int)(a * 255), 0, 255) << 24;
     public static Vector4 ToV(System.Drawing.Color c) => new(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
     public static System.Drawing.Color ToColor(Vector4 v) => System.Drawing.Color.FromArgb(B(v.W), B(v.X), B(v.Y), B(v.Z));
@@ -74,25 +73,25 @@ internal static class Ui
 
     // ---- Style ----
 
-    private static int _styleColors, _styleVars;
+    private static int _styleVars;
+
+    private static readonly (ImGuiCol Col, uint Value)[] StyleColors =
+    {
+        (ImGuiCol.FrameBg, 0xFF1A1820u), (ImGuiCol.FrameBgHovered, 0xFF262330u), (ImGuiCol.FrameBgActive, 0xFF2E2A3Au),
+        (ImGuiCol.SliderGrab, Accent), (ImGuiCol.SliderGrabActive, 0xFF8AD2FFu), (ImGuiCol.CheckMark, Accent),
+        (ImGuiCol.Button, 0xFF2A2733u), (ImGuiCol.ButtonHovered, 0xFF3A3646u), (ImGuiCol.ButtonActive, AccentDim),
+        (ImGuiCol.Header, AccentFaint), (ImGuiCol.HeaderHovered, 0x503C78A0u), (ImGuiCol.HeaderActive, 0x703C78A0u),
+        (ImGuiCol.Tab, 0xFF1C1A22u), (ImGuiCol.TabHovered, 0xFF3A3646u), (ImGuiCol.TabActive, 0xFF3A3040u),
+        (ImGuiCol.Border, CardBorder), (ImGuiCol.Separator, CardBorder), (ImGuiCol.PopupBg, 0xF8141218u),
+        (ImGuiCol.TextSelectedBg, AccentFaint), (ImGuiCol.Text, Text), (ImGuiCol.TextDisabled, Muted),
+    };
 
     /// <summary>The panel's look: rounded frames, amber grabs and checks, dark wells. Pop with <see cref="PopStyle"/>.</summary>
     public static void PushStyle()
     {
         var avail = ImGui.GetContentRegionAvail().X;
         ControlW = Math.Clamp(avail - LabelW - 24, 150f, 320f);
-        var c = new[]
-        {
-            (ImGuiCol.FrameBg, 0xFF1A1820u), (ImGuiCol.FrameBgHovered, 0xFF262330u), (ImGuiCol.FrameBgActive, 0xFF2E2A3Au),
-            (ImGuiCol.SliderGrab, Accent), (ImGuiCol.SliderGrabActive, 0xFF8AD2FFu), (ImGuiCol.CheckMark, Accent),
-            (ImGuiCol.Button, 0xFF2A2733u), (ImGuiCol.ButtonHovered, 0xFF3A3646u), (ImGuiCol.ButtonActive, AccentDim),
-            (ImGuiCol.Header, AccentFaint), (ImGuiCol.HeaderHovered, 0x503C78A0u), (ImGuiCol.HeaderActive, 0x703C78A0u),
-            (ImGuiCol.Tab, 0xFF1C1A22u), (ImGuiCol.TabHovered, 0xFF3A3646u), (ImGuiCol.TabActive, 0xFF3A3040u),
-            (ImGuiCol.Border, CardBorder), (ImGuiCol.Separator, CardBorder), (ImGuiCol.PopupBg, 0xF8141218u),
-            (ImGuiCol.TextSelectedBg, AccentFaint), (ImGuiCol.Text, Text), (ImGuiCol.TextDisabled, Muted),
-        };
-        foreach (var (col, v) in c) ImGui.PushStyleColor(col, v);
-        _styleColors = c.Length;
+        for (var i = 0; i < StyleColors.Length; i++) ImGui.PushStyleColor(StyleColors[i].Col, StyleColors[i].Value);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
         ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 4f);
         ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 6f);
@@ -105,7 +104,7 @@ internal static class Ui
     public static void PopStyle()
     {
         ImGui.PopStyleVar(_styleVars);
-        ImGui.PopStyleColor(_styleColors);
+        ImGui.PopStyleColor(StyleColors.Length);
     }
 
     // ---- Text and layout ----
@@ -255,23 +254,6 @@ internal static class Ui
         return true;
     }
 
-    /// <summary>A dropdown row over the node's values.</summary>
-    public static bool Combo(ListNode node, string? label = null)
-    {
-        RowLabel(label ?? Label(node), TipOf(node));
-        var changed = false;
-        ImGui.PushID(node.GetHashCode());
-        if (ImGui.BeginCombo("##l", node.Value ?? ""))
-        {
-            foreach (var v in node.Values)
-                if (ImGui.Selectable(v, v == node.Value)) { node.Value = v; changed = true; }
-            ImGui.EndCombo();
-        }
-        ImGui.PopID();
-        Tip(TipOf(node));
-        return changed;
-    }
-
     /// <summary>A row of buttons, one per value, the chosen one lit: for 2-4 short choices.</summary>
     public static bool Segmented(ListNode node, string? label = null)
     {
@@ -297,18 +279,6 @@ internal static class Ui
             if (on) ImGui.PopStyleColor(2);
         }
         ImGui.PopStyleVar();
-        return changed;
-    }
-
-    public static bool TextInput(TextNode node, string? hint = null, string? label = null)
-    {
-        RowLabel(label ?? Label(node), TipOf(node));
-        var v = node.Value ?? "";
-        ImGui.PushID(node.GetHashCode());
-        var changed = hint != null ? ImGui.InputTextWithHint("##t", hint, ref v, 200) : ImGui.InputText("##t", ref v, 200);
-        ImGui.PopID();
-        Tip(TipOf(node));
-        if (changed) node.Value = v;
         return changed;
     }
 
@@ -362,8 +332,6 @@ internal static class Ui
         if (outline) { dl.AddRect(org, org + size, fill, r); dl.AddText(org + new Vector2(5, 1.5f), fill, text); }
         else { dl.AddRectFilled(org, org + size, fill, r); dl.AddText(org + new Vector2(5, 1.5f), Contrast(fill), text); }
     }
-
-    public static float BadgeWidth(string text) => ImGui.CalcTextSize(text).X + 10;
 
     private static uint Contrast(uint c) => ((c & 0xFF) * 77 + ((c >> 8) & 0xFF) * 150 + ((c >> 16) & 0xFF) * 29) >> 8 > 150 ? 0xFF14120E : 0xFFFFFFFF;
 

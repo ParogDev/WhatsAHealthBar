@@ -842,7 +842,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>A sample bar's look as classify would resolve it: fake statuses, a DoT on uniques and rares, the immune sample.</summary>
-    internal void PreviewLook(Bar b)
+    private void PreviewLook(Bar b) => PreviewLook(b, _now);
+
+    /// <param name="now">The clock the sample runs on: the plugin's for the in-game preview, ImGui's for the settings panel (which draws with the plugin disabled too).</param>
+    internal void PreviewLook(Bar b, double now)
     {
         var L = _renderer.Rules;
         var look = _renderer.BaseLook(b.Kind);
@@ -864,13 +867,13 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             {
                 if (!L.StatusById.TryGetValue(id, out var rule)) continue;
                 var hits = b.Statuses ??= new StatusHit[16];
-                hits[b.StatusCount++] = new StatusHit { Rule = rule, Stacks = id == "poison" ? 5 : 1, Until = _now + 2 + (rule % 5) };
+                hits[b.StatusCount++] = new StatusHit { Rule = rule, Stacks = id == "poison" ? 5 : 1, Until = now + 2 + (rule % 5) };
                 L.StatusPatches[rule]?.ApplyTo(ref look);
             }
             if (b.Kind <= BarKind.Rare && Settings.Dot.Enabled)
             {
                 // A DoT refreshed every 3 s at 6% of max life per second.
-                if (b.DotUntil <= _now) b.DotUntil = _now + 3;
+                if (b.DotUntil <= now) b.DotUntil = now + 3;
                 b.DotRate = b.BaseMax[Bar.Life] * 0.06f;
             }
             else b.DotRate = 0;
