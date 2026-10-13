@@ -72,7 +72,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     public override bool Initialise()
     {
         Name = "Whats A Health Bar";
-        _mainThread = Environment.CurrentManagedThreadId;
+        _mainThread = -1;
         Settings.Preview.OnPressed += () => StartPreview(8, null);
         GameController.PluginBridge.SaveMethod(GetStateName, (Func<string>)GetStateJson);
         GameController.PluginBridge.SaveMethod(PreviewName, (Func<string, string>)PreviewFromBridge);
@@ -90,8 +90,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private void Migrate()
     {
         Settings.Statuses ??= StatusDefaults.Make();
-        Settings.Overrides ??= new List<OverrideRule>();
-        Settings.IgnoredPaths ??= new List<string>();
+        CompiledLayers.Normalize(Settings);
         if (Settings.Look.CullPercent.Value > 0)
         {
             Settings.States.Cullable.Value = StateModes.Notch;
@@ -163,6 +162,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     public override void Tick()
     {
         var t0 = Stopwatch.GetTimestamp();
+        _mainThread = Environment.CurrentManagedThreadId; // the thread Tick runs on (Initialise may run elsewhere)
         _now = _clock.Elapsed.TotalSeconds;
         _dt = (float)Math.Clamp(_now - _lastFrame, 0, 0.1);
         _lastFrame = _now;
@@ -334,7 +334,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             b.Dist = MathF.Sqrt(d2);
             if (d2 > maxD2) { b.Why = Why.TooFar; continue; }
             // Hostile non-uniques only: allies are never targetable by you, and a boss mid-phase keeps its bar.
-            if (hideUntargetable && b.Kind is BarKind.Rare or BarKind.Magic or BarKind.Normal && !e.IsTargetable) { b.Why = Why.Untargetable; continue; }
+            // A hidden monster shown dimmed (States > Hidden = Dim) is usually untargetable too: the Dim choice wins.
+            if (hideUntargetable && b.Kind is BarKind.Rare or BarKind.Magic or BarKind.Normal && !(hidden && hiddenDim) && !e.IsTargetable) { b.Why = Why.Untargetable; continue; }
             // Life read here (classify rate) for the hidden-until-hurt rules, so those bars cost nothing per frame until
             // they qualify, and reappear as soon as they do.
             if (b.Kind == BarKind.Minion && minionBelow < 1 && life.MaxHP > 0 && life.CurHP >= life.MaxHP * minionBelow) { b.Why = Why.MinionNotHurt; continue; }
@@ -354,13 +355,19 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             }
             else b.OverrideIndex = -1;
 
-            if (_renderer.Styles[(int)b.Kind].HasText && b.NameThreshold != abbreviate)
+            // The name is read once, unless it wasn't readable yet (then the path's tail stands in and it is read again).
+            if (_renderer.Styles[(int)b.Kind].HasText && (b.NameThreshold != abbreviate || b.NameFromPath))
             {
                 var raw = e.RenderName;
-                if (string.IsNullOrEmpty(raw)) raw = b.PathKey[(b.PathKey.LastIndexOf('/') + 1)..];
-                b.DisplayName = TextTemplate.Abbreviate(raw, abbreviate);
-                b.NameThreshold = abbreviate;
-                b.NameVersion++;
+                var fromPath = string.IsNullOrEmpty(raw);
+                if (fromPath) raw = b.PathKey[(b.PathKey.LastIndexOf('/') + 1)..];
+                if (b.NameThreshold != abbreviate || !fromPath)
+                {
+                    b.DisplayName = TextTemplate.Abbreviate(raw!, abbreviate);
+                    b.NameThreshold = abbreviate;
+                    b.NameVersion++;
+                }
+                b.NameFromPath = fromPath;
             }
 
             // Stats: invulnerable, can't be culled, damage over time (one frame-cached dictionary read).
@@ -536,6 +543,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             if (_drawList.Count == _moved.Length) Array.Resize(ref _moved, _moved.Length * 2);
             _moved[_drawList.Count] = moved;
             _drawList.Add(b);
+            b.DrawnAt = _now;
             _byKind[(int)b.Kind]++;
         }
         if (_drawList.Count > _peakDrawn) _peakDrawn = _drawList.Count;
@@ -785,8 +793,13 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         b.StatusCount = 0;
         if (b.Invulnerable)
         {
-            look.Life = BarRenderer.Pack(states.InvulnerableColor.Value);
-            look.Grey = look.Hatch = true;
+            // As classify would: Off draws a plain bar, Hide draws none.
+            if (states.Invulnerable.Value == StateModes.GreyHatch)
+            {
+                look.Life = BarRenderer.Pack(states.InvulnerableColor.Value);
+                look.Grey = look.Hatch = true;
+            }
+            else if (states.Invulnerable.Value == StateModes.Hide) look.Opacity = 0;
         }
         else
         {
@@ -808,14 +821,14 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         if (!_renderer.IconsFor(b.Kind)) b.StatusCount = 0;
         var cullOn = states.Cullable.Value != StateModes.Off;
         var mul = states.CullMultiplier.Value;
-        b.CullAt = !cullOn || b.Invulnerable ? 0 : b.Kind switch
+        b.CullAt = !cullOn || b.Invulnerable ? 0 : Math.Min(1, b.Kind switch
         {
             BarKind.Unique => states.CullUnique.Value / 100f * mul,
             BarKind.Rare => states.CullRare.Value / 100f * mul,
             BarKind.Magic => states.CullMagic.Value / 100f * mul,
             BarKind.Normal => states.CullNormal.Value / 100f * mul,
             _ => 0,
-        };
+        });
         b.Look = look;
     }
 
@@ -829,14 +842,20 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     {
         if (Environment.CurrentManagedThreadId == _mainThread) return work();
         string? result = null;
-        using var done = new ManualResetEventSlim();
+        var done = new ManualResetEventSlim();
+        var claim = 0; // 1: Tick took the work, 2: the caller gave up; whichever comes first wins, so a timed-out call never runs late
         _mainWork.Enqueue(() =>
         {
+            if (Interlocked.CompareExchange(ref claim, 1, 0) != 0) return;
             try { result = work(); }
             catch (Exception ex) { result = JsonConvert.SerializeObject(new LayersReplyDto { Ok = false, Error = "threw", Message = $"{method}: {ex.Message}" }); }
             finally { done.Set(); }
         });
-        if (done.Wait(3000)) return result!;
+        if (done.Wait(3000) || Interlocked.CompareExchange(ref claim, 2, 0) == 1)
+        {
+            done.Wait(); // taken just as the wait ended: it is running now, wait for it
+            return result!;
+        }
         return JsonConvert.SerializeObject(new LayersReplyDto
         {
             Ok = false, Error = "tick_timeout",
@@ -879,6 +898,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 if (dto.Statuses != null) Settings.Statuses = dto.Statuses.Where(s => s != null).ToList();
                 if (dto.Overrides != null) Settings.Overrides = dto.Overrides.Where(o => o != null).ToList();
                 if (dto.IgnoredPaths != null) Settings.IgnoredPaths = dto.IgnoredPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).Distinct().ToList();
+                CompiledLayers.Normalize(Settings);
             }
             CompileLayers();
             var c = _renderer.Rules;
@@ -943,7 +963,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             Path = b.PathKey.Length > 0 ? b.PathKey : CompiledLayers.PathKey(e?.Path),
             Name = b.DisplayName.Length > 0 ? b.DisplayName : null,
             Kind = b.Kind.ToString(),
-            Drawn = b.Why == Why.Drawn && _drawList.Contains(b),
+            Drawn = b.Why == Why.Drawn && _now - b.DrawnAt < 0.25,
             Reason = WhyText.Code(b.Why),
             Detail = WhyText.Detail(b, Settings),
             Distance = MathF.Round(b.Dist),

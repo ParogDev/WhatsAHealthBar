@@ -89,6 +89,10 @@ public sealed class Bar
     /// <summary>Bumped when <see cref="DisplayName"/> changes (the {name} token's signature).</summary>
     public int NameVersion;
     public int NameThreshold = -1;
+    /// <summary>RenderName was empty: the path's tail stands in and the name is read again next pass.</summary>
+    public bool NameFromPath;
+    /// <summary>Plugin clock time the bar was last added to the draw list (WhyNotDrawn's drawn flag).</summary>
+    public double DrawnAt = double.NegativeInfinity;
     /// <summary>The override that matched (-1: none), valid for <see cref="OverrideVersion"/> of the compiled layers.</summary>
     public int OverrideIndex = -1, OverrideVersion = -1;
     /// <summary>Kind look, then override, status and state patches.</summary>

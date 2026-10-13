@@ -215,6 +215,29 @@ public sealed class CompiledLayers
         return c;
     }
 
+    /// <summary>
+    /// Fills null strings (a SetLayers call or a hand-edited settings file with "label": null) with their defaults, so
+    /// nothing downstream has to guard them; drops null entries.
+    /// </summary>
+    public static void Normalize(WhatsAHealthBarSettings s)
+    {
+        s.Statuses ??= new List<StatusRule>();
+        s.Overrides ??= new List<OverrideRule>();
+        s.IgnoredPaths ??= new List<string>();
+        s.Statuses.RemoveAll(r => r == null);
+        s.Overrides.RemoveAll(o => o == null);
+        s.IgnoredPaths.RemoveAll(string.IsNullOrWhiteSpace);
+        foreach (var r in s.Statuses)
+        {
+            r.Id ??= ""; r.Label ??= ""; r.Icon ??= nameof(StatusIcon.Cursed); r.Tint ??= "#FFFFFFFF";
+            r.Badge ??= Badges.Bare; r.BadgeTint ??= "#FF2A2630";
+        }
+        foreach (var o in s.Overrides)
+        {
+            o.Name ??= ""; o.Match ??= "Path"; o.Pattern ??= ""; o.Patch ??= new StylePatch();
+        }
+    }
+
     /// <summary>The first enabled override whose regex matches, or -1. A regex timing out counts as no match.</summary>
     public int MatchOverride(string path, string name)
     {

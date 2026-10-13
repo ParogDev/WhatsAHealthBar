@@ -445,8 +445,18 @@ public sealed class BarRenderer
 
         if (b.StatusCount > 0 && _icons && b.Kind <= _iconsUpTo && AtlasId != IntPtr.Zero)
         {
-            IconBlock(b, true, _debuffAnchor, x0 - _outlineW, x1 + _outlineW, rightX, y0, above, below, a, now);
-            IconBlock(b, false, _buffAnchor, x0 - _outlineW, x1 + _outlineW, rightX, y0, above, below, a, now);
+            // Debuffs first; buffs at the same anchor start past the debuff block instead of on top of it.
+            var left = x0 - _outlineW;
+            var used = IconBlock(b, true, _debuffAnchor, left, rightX, y0, above, below, a, now);
+            if (_buffAnchor == _debuffAnchor && used > 0)
+                switch (_buffAnchor)
+                {
+                    case 0: above -= used; break;
+                    case 1: below += used; break;
+                    case 2: left -= used; break;
+                    default: rightX += used; break;
+                }
+            IconBlock(b, false, _buffAnchor, left, rightX, y0, above, below, a, now);
         }
     }
 
@@ -472,7 +482,8 @@ public sealed class BarRenderer
     /// below, left (right-aligned to the bar) or right (after the percent). Icon size is the setting times each status's
     /// scale; stacks top-right and seconds left underneath, from prebuilt strings.
     /// </summary>
-    private void IconBlock(Bar b, bool debuffs, byte anchor, float left, float right, float rightX, float y0, float above, float below,
+    /// <returns>The block's extent away from the bar (height above/below, width left/right, plus the gap); 0 when empty.</returns>
+    private float IconBlock(Bar b, bool debuffs, byte anchor, float left, float rightX, float y0, float above, float below,
         float a, double now)
     {
         var L = Rules;
@@ -486,7 +497,7 @@ public sealed class BarRenderer
             n++;
             maxScale = MathF.Max(maxScale, Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
         }
-        if (n == 0) return;
+        if (n == 0) return 0;
         const float gap = 2;
         var cell = MathF.Round(_iconSize * maxScale);
         var cols = Math.Min(_iconCols, n);
@@ -553,6 +564,7 @@ public sealed class BarRenderer
             }
             k++;
         }
+        return anchor <= 1 ? gap + rows * cell + (rows - 1) * gap : gap + gridW;
     }
 
     private static readonly string[] Numbers = BuildNumbers(1000);
