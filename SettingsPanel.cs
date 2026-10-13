@@ -29,6 +29,8 @@ public static class SettingsPanel
     private static readonly string[] TokenChips = BuildTokenChips();
 
     private static int _kind, _textKind, _openStatus = -1, _openOverride = -1;
+    /// <summary>Room a list card keeps on its right for the kind badge, the two arrows and the remove button.</summary>
+    private const float TrailingW = 190f;
     private static string _search = "", _ignoreInput = "", _iconFilter = "";
     private static string? _searchDone;
     private static readonly List<BuffDefDto> _searchHits = new();
@@ -300,10 +302,10 @@ public static class SettingsPanel
             var tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
             Ui.IconImage(atlas, icon, r.Badge == Badges.Gem ? 0 : 1, en ? tint : Ui.Alpha(tint, 0.35f), 20);
             ImGui.SameLine();
-            if (ImGui.Selectable(r.Label.Length > 0 ? r.Label : r.Id, open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 150, 0)))
+            if (ImGui.Selectable(r.Label.Length > 0 ? r.Label : r.Id, open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0)))
                 _openStatus = open ? -1 : i;
             Ui.Tip(r.Id);
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - 140);
+            ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
             Ui.Badge(r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64);
             ImGui.SameLine();
             if (ImGui.ArrowButton("##up", ImGuiDir.Up) && i > 0) { (s.Statuses[i - 1], s.Statuses[i]) = (s.Statuses[i], s.Statuses[i - 1]); if (open) _openStatus = i - 1; changed = true; }
@@ -475,10 +477,10 @@ public static class SettingsPanel
             ImGui.Dummy(new Vector2(12, 0));
             Ui.Tip(o.Pattern.Length == 0 ? "No pattern yet: matches nothing" : err ?? "Valid regex");
             ImGui.SameLine();
-            if (ImGui.Selectable(o.Name.Length > 0 ? o.Name : "(unnamed)", open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - 150, 0)))
+            if (ImGui.Selectable(o.Name.Length > 0 ? o.Name : "(unnamed)", open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0)))
                 _openOverride = open ? -1 : i;
             Ui.Tip(o.Pattern.Length > 0 ? o.Pattern : "Click to edit");
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - 140);
+            ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
             Ui.Badge(o.Match == "Name" ? "name" : "path", Ui.Faint);
             ImGui.SameLine();
             if (ImGui.ArrowButton("##up", ImGuiDir.Up) && i > 0) { (s.Overrides[i - 1], s.Overrides[i]) = (s.Overrides[i], s.Overrides[i - 1]); if (open) _openOverride = i - 1; changed = true; }
