@@ -82,6 +82,10 @@ public sealed class WhatsAHealthBarSettings : ISettings
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<string> IgnoredPaths { get; set; } = new();
 
+    /// <summary>Bumped by Migrate after a one-time change of saved values (0: a file from before it existed).</summary>
+    [IgnoreMenu]
+    public int SettingsVersion { get; set; }
+
     [JsonIgnore]
     [Menu("Preview in game", "Draws one sample bar per kind in the middle of the screen for 8 seconds, with fake hits and heals (also from the control center)")]
     public ButtonNode Preview { get; set; } = new();

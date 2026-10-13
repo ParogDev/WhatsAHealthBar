@@ -335,7 +335,7 @@ public static class SettingsPanel
             ImGui.SameLine();
             var action = CardRow(r.Label.Length > 0 ? r.Label : r.Id, r.Id, r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64, open, i == 0, i == s.Statuses.Count - 1);
             changed |= Apply(action, s.Statuses, i, ref _openStatus);
-            if (action == RowAction.Remove) { Ui.EndCard(); ImGui.PopID(); break; }
+            if (action is RowAction.Remove or RowAction.Up or RowAction.Down) { Ui.EndCard(); ImGui.PopID(); break; } // the list moved: next frame draws it
             if (open) changed |= StatusBody(r, atlas);
             Ui.EndCard();
             ImGui.PopID();
@@ -502,7 +502,7 @@ public static class SettingsPanel
             ImGui.SameLine();
             var action = CardRow(o.Name.Length > 0 ? o.Name : "(unnamed)", o.Pattern.Length > 0 ? o.Pattern : "Click to edit", o.Match == "Name" ? "name" : "path", Ui.Faint, open, i == 0, i == s.Overrides.Count - 1);
             changed |= Apply(action, s.Overrides, i, ref _openOverride);
-            if (action == RowAction.Remove) { Ui.EndCard(); ImGui.PopID(); break; }
+            if (action is RowAction.Remove or RowAction.Up or RowAction.Down) { Ui.EndCard(); ImGui.PopID(); break; } // the list moved: next frame draws it
             if (open)
             {
                 ImGui.Separator();

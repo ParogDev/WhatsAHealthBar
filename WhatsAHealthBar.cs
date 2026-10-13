@@ -99,10 +99,14 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             Settings.States.Cullable.Value = StateModes.Notch;
             Settings.Look.CullPercent.Value = 0;
         }
-        // Old defaults saved by earlier builds: the poe2db cull threshold for normals (30 confirmed in play) and the
-        // pre-plate icon size. A value that is exactly the old default was never a choice.
-        if (Settings.States.CullNormal.Value == 35) Settings.States.CullNormal.Value = 30;
-        if (Settings.Icons.Size.Value == 22) Settings.Icons.Size.Value = 26;
+        // Once, by settings version: old defaults saved by earlier builds (the poe2db cull threshold for normals, 30
+        // confirmed in play; the pre-plate icon size) become the new ones; a value set on purpose later stays.
+        if (Settings.SettingsVersion < 2)
+        {
+            if (Settings.States.CullNormal.Value == 35) Settings.States.CullNormal.Value = 30;
+            if (Settings.Icons.Size.Value == 22) Settings.Icons.Size.Value = 26;
+            Settings.SettingsVersion = 2;
+        }
     }
 
     /// <summary>Loads the status icon atlas (syrairc's glyphs, composed by textures/build-atlas.ps1) as one ImGui texture.</summary>

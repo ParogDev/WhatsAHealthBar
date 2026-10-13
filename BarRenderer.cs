@@ -516,7 +516,6 @@ public sealed class BarRenderer
         var rim = _iconPlate ? 2f : 0f;
         var gap = _iconPlate ? 3f : 4f;
         var cell = MathF.Round(_iconSize * maxScale) + 2 * rim;
-        var fs = MathF.Max(10, MathF.Round((cell - 2 * rim) * 0.6f));
         var pitch = cell + gap;
         var cols = Math.Min(_iconCols, n);
         var rows = (n + _iconCols - 1) / _iconCols;
@@ -546,6 +545,7 @@ public sealed class BarRenderer
             var icon = L.StatusIcons[rule];
             var tintFull = L.StatusTints[rule];
             var tint = Mul(tintFull, a);
+            var fs = MathF.Max(10, MathF.Round(size * 0.6f)); // this icon's own text size, not the block's largest
             _iconsDrawn++;
             if (_iconPlate)
             {
