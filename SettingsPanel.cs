@@ -89,11 +89,14 @@ public static class SettingsPanel
         // while the plugin is disabled and gets no Tick; but once the mouse lets go, not on every frame of a slider or
         // color drag (a compile renumbers the rules and makes every bar re-read its stats). The samples re-resolve their
         // statuses against the new rules on the next frame.
-        _layersPending |= changed;
-        if (_layersPending && !ImGui.IsAnyItemActive()) { _layersPending = false; plugin.CompileLayers(); Samples.Invalidate(); }
+        Pending |= changed;
+        DrawnAt = ImGui.GetTime();
+        if (Pending && !ImGui.IsAnyItemActive()) { Pending = false; plugin.CompileLayers(); Samples.Invalidate(); }
     }
 
-    private static bool _layersPending;
+    /// <summary>An edit not compiled yet (a widget was still active) and when the panel last drew: Tick compiles it when the menu closed on it.</summary>
+    internal static bool Pending;
+    internal static double DrawnAt = double.NegativeInfinity;
 
     // ---- Header: name, enable, live status, preview ----
 
@@ -613,8 +616,11 @@ public static class SettingsPanel
     private static RowAction CardRow(string title, string? titleTip, string badge, uint badgeColor, bool open, bool first, bool last)
     {
         var action = RowAction.None;
-        // ###row: the user's text is the label only, never the id (a status labelled "Buff" must not share the segmented button's).
-        if (ImGui.Selectable(title + "###row", open, ImGuiSelectableFlags.None, new Vector2(MathF.Max(40, ImGui.GetContentRegionAvail().X - TrailingW), 0))) action = RowAction.Toggle;
+        // The selectable's id is fixed and the title is drawn over it: the user's text never becomes an ImGui id (a status
+        // labelled "Buff" must not share the segmented button's), and no string is built per frame.
+        var at = ImGui.GetCursorScreenPos();
+        if (ImGui.Selectable("##row", open, ImGuiSelectableFlags.None, new Vector2(MathF.Max(40, ImGui.GetContentRegionAvail().X - TrailingW), 0))) action = RowAction.Toggle;
+        ImGui.GetWindowDrawList().AddText(at + new Vector2(ImGui.GetStyle().FramePadding.X, 0), Ui.Text, title);
         Ui.Tip(titleTip);
         ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
         Ui.Badge(badge, badgeColor);

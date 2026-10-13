@@ -99,6 +99,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             Settings.States.Cullable.Value = StateModes.Notch;
             Settings.Look.CullPercent.Value = 0;
         }
+        // Old defaults saved by earlier builds: the poe2db cull threshold for normals (30 confirmed in play) and the
+        // pre-plate icon size. A value that is exactly the old default was never a choice.
+        if (Settings.States.CullNormal.Value == 35) Settings.States.CullNormal.Value = 30;
+        if (Settings.Icons.Size.Value == 22) Settings.Icons.Size.Value = 26;
     }
 
     /// <summary>Loads the status icon atlas (syrairc's glyphs, composed by textures/build-atlas.ps1) as one ImGui texture.</summary>
@@ -177,6 +181,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         while (_link.TryTakePreview(out var msg))
             StartPreview(msg?["seconds"]?.Value<double?>() ?? 8, (string?)msg?["focus"], msg?["stress"]?.Value<int?>() ?? 0);
         while (_previewRequests.TryDequeue(out var req)) StartPreview(req.seconds, req.focus, req.stress);
+        // The panel compiles its own edits once the mouse lets go; one left pending when the menu closed on it is compiled here.
+        if (SettingsPanel.Pending && ImGui.GetTime() - SettingsPanel.DrawnAt > 0.25) { SettingsPanel.Pending = false; _layersDirty = true; }
         if (_layersDirty) CompileLayers();
 
         _active = Evaluate();
@@ -700,15 +706,23 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
     internal BarRenderer Renderer => _renderer;
     internal Random Rng => _rng;
-    /// <summary>Read from the window now (Tick's cached value stands still while the plugin is disabled, and the panel draws then too).</summary>
+    /// <summary>The window height over 1440, read at most twice a second (Tick's copy stands still while the plugin is disabled, and the panel draws then too).</summary>
     internal float ResolutionScale
     {
         get
         {
-            var h = GameController.Window.GetWindowRectangleReal().Height;
-            return h > 0 ? h / 1440f : 1;
+            var t = Environment.TickCount64;
+            if (t - _scaleReadAt > 500)
+            {
+                _scaleReadAt = t;
+                var h = GameController.Window.GetWindowRectangleReal().Height;
+                _resolutionScale = h > 0 ? h / 1440f : 1;
+            }
+            return _resolutionScale;
         }
     }
+
+    private long _scaleReadAt = long.MinValue;
     internal string? Suppressed => _suppressed;
     internal string? AtlasProblem => _atlasProblem;
     internal bool Previewing => _now < _previewUntil;

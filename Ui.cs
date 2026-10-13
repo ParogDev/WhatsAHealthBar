@@ -176,7 +176,7 @@ internal static class Ui
         var tip = TipOf(node);
         var v = node.Value;
         PushNodeId(node);
-        Anim.TryGetValue(node, out var a);
+        if (!Anim.TryGetValue(node, out var a)) a = v ? 1f : 0f; // first sight: already in place, only a real change slides
         var changed = Pill("##p", ref v, ref a);
         Anim[node] = a;
         Tip(tip);
