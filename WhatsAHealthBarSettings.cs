@@ -82,9 +82,20 @@ public sealed class WhatsAHealthBarSettings : ISettings
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<string> IgnoredPaths { get; set; } = new();
 
+    /// <summary>Bumped by Migrate after a one-time change of saved values (0: a file from before it existed).</summary>
+    [IgnoreMenu]
+    public int SettingsVersion { get; set; }
+
     [JsonIgnore]
     [Menu("Preview in game", "Draws one sample bar per kind in the middle of the screen for 8 seconds, with fake hits and heals (also from the control center)")]
     public ButtonNode Preview { get; set; } = new();
+
+    /// <summary>The one kind-to-settings mapping (the renderer and the panel both go through it).</summary>
+    public KindSettings For(BarKind kind) => kind switch
+    {
+        BarKind.Unique => Unique, BarKind.Rare => Rare, BarKind.Magic => Magic, BarKind.Normal => Normal,
+        BarKind.Minion => Minion, BarKind.Player => Player, _ => Self,
+    };
 }
 
 /// <summary>The Pools and Total line choices.</summary>
@@ -260,7 +271,10 @@ public sealed class StatusIconSettings
     public ListNode BuffAnchor { get; set; } = new() { Values = new(Anchors.All), Value = Anchors.Right };
 
     [Menu("Icon size (px)", "At 1440p; scales with the bars")]
-    public RangeNode<int> Size { get; set; } = new(22, 8, 64);
+    public RangeNode<int> Size { get; set; } = new(26, 8, 64);
+
+    [Menu("Backing plate", "A dark rounded slab under each icon with a thin ring in the status's color, so icons read on any background")]
+    public ToggleNode Plate { get; set; } = new(true);
 
     [Menu("Columns", "Icons per row before wrapping")]
     public RangeNode<int> Columns { get; set; } = new(6, 1, 12);
@@ -271,7 +285,8 @@ public sealed class StatusIconSettings
     [Menu("Show stacks")]
     public ToggleNode ShowStacks { get; set; } = new(true);
 
-    [Menu("Show duration", "Seconds left under each icon with a timer")]
+    [Menu("Show duration", "The seconds left as text over the lower part of each timed icon. The thin line under a timed icon " +
+                           "(full at 8 s, draining to nothing) is always drawn")]
     public ToggleNode ShowDuration { get; set; } = new(false);
 }
 
@@ -295,13 +310,13 @@ public sealed class StateSettings
     [Menu("Invulnerable color", "The fill color while invulnerable")]
     public ColorNode InvulnerableColor { get; set; } = Color.FromArgb(255, 150, 150, 160);
 
-    [Menu("Cullable", "Culling strike kills at a life % by rarity (PoE2: normal 35, magic 20, rare 10, unique 5, from poe2db). " +
-                      "Notch: a mark at the threshold. Tint: the fill changes color once under it. Hide: no bar under it")]
+    [Menu("Cullable", "Culling strike kills at a life % by rarity (PoE2: normal 30, magic 20, rare 10, unique 5; normal confirmed " +
+                      "in play 2026-10-12). Notch: a mark at the threshold. Tint: the fill changes color once under it. Hide: no bar under it")]
     public ListNode Cullable { get; set; } = new()
         { Values = new() { StateModes.Off, StateModes.Notch, StateModes.NotchTint, StateModes.Hide }, Value = StateModes.NotchTint };
 
     [Menu("Cull % normal")]
-    public RangeNode<int> CullNormal { get; set; } = new(35, 0, 60);
+    public RangeNode<int> CullNormal { get; set; } = new(30, 0, 60);
 
     [Menu("Cull % magic")]
     public RangeNode<int> CullMagic { get; set; } = new(20, 0, 60);
@@ -325,8 +340,8 @@ public sealed class StateSettings
 [Submenu(CollapsedByDefault = true)]
 public sealed class DotSettings
 {
-    [Menu("Show predicted loss", "On monsters: a dark hatched chunk at the end of the life fill, what the damage over time running now " +
-                                 "will still take (rate x time left on the longest ailment)")]
+    [Menu("Show predicted loss", "On monsters: a dark chunk at the end of the life fill with a light edge where the fill will end up, what " +
+                                 "the damage over time running now will still take (rate x time left on the longest ailment)")]
     public ToggleNode Enabled { get; set; } = new(true);
 
     [Menu("Chunk color")]

@@ -108,6 +108,16 @@ public static class Colors
 
     public static string Format(uint abgr) =>
         "#" + ((abgr & 0xFF00FF00) | ((abgr >> 16) & 0xFF) | ((abgr & 0xFF) << 16)).ToString("X8", CultureInfo.InvariantCulture);
+
+    /// <summary>Perceived brightness of a packed ABGR color, 0-255 (Rec. 601 weights).</summary>
+    public static uint Luma(uint c) => ((c & 0xFF) * 77 + ((c >> 8) & 0xFF) * 150 + ((c >> 16) & 0xFF) * 29) >> 8;
+
+    /// <summary>Per-channel blend of two packed ABGR colors (alpha included), t = 0 gives x.</summary>
+    public static uint Lerp(uint x, uint y, float t)
+    {
+        uint Ch(int sh) => (uint)(((x >> sh) & 0xFF) + (((int)((y >> sh) & 0xFF) - (int)((x >> sh) & 0xFF)) * t)) & 0xFF;
+        return Ch(0) | Ch(8) << 8 | Ch(16) << 16 | Ch(24) << 24;
+    }
 }
 
 /// <summary>How a status icon is drawn: the icon alone, the icon on a gem badge (one cell), or the icon over a tintable badge.</summary>
@@ -291,13 +301,20 @@ public static class StatusAtlas
     public const int Count = 96, Columns = 8, Cell = 64, Width = 17 * Cell, Height = 12 * Cell;
     public static readonly string[] Names = Enum.GetNames<StatusIcon>();
 
-    /// <summary>UVs of one cell: <paramref name="sheet"/> 0 = gem-badged icons, 1 = bare icons.</summary>
-    public static void Uv(int icon, int sheet, out float u0, out float v0, out float u1, out float v1)
+    /// <summary>
+    /// The transparent margin around a bare glyph in its cell (the glyph fills about three quarters of it): cropped off
+    /// when a bare glyph is drawn, so it fills its plate instead of floating small in the middle.
+    /// </summary>
+    public const float BareInset = 0.11f;
+
+    /// <summary>UVs of one cell: <paramref name="sheet"/> 0 = gem-badged icons, 1 = bare icons; <paramref name="inset"/> crops each edge by that fraction.</summary>
+    public static void Uv(int icon, int sheet, out float u0, out float v0, out float u1, out float v1, float inset = 0)
     {
-        var x = sheet * Columns * Cell + icon % Columns * Cell;
-        var y = icon / Columns * Cell;
-        u0 = x / (float)Width; v0 = y / (float)Height;
-        u1 = (x + Cell) / (float)Width; v1 = (y + Cell) / (float)Height;
+        var x = sheet * Columns * Cell + icon % Columns * Cell + inset * Cell;
+        var y = icon / Columns * Cell + inset * Cell;
+        var span = Cell * (1 - 2 * inset);
+        u0 = x / Width; v0 = y / Height;
+        u1 = (x + span) / Width; v1 = (y + span) / Height;
     }
 
     public static void BadgeUv(out float u0, out float v0, out float u1, out float v1)
@@ -305,6 +322,18 @@ public static class StatusAtlas
         var x = 2 * Columns * Cell;
         u0 = x / (float)Width; v0 = 0;
         u1 = (x + Cell) / (float)Width; v1 = Cell / (float)Height;
+    }
+
+    /// <summary>
+    /// UVs of the middle of the solid white block (row 2 of the badge column): a quad sampling it is a plain colored
+    /// rectangle drawn in the icons' draw command, i.e. over the icons, for overlays that must sit on top of them.
+    /// </summary>
+    public static void SolidUv(out float u0, out float v0, out float u1, out float v1)
+    {
+        var x = 2 * Columns * Cell + 28;
+        var y = 2 * Cell + 28;
+        u0 = x / (float)Width; v0 = y / (float)Height;
+        u1 = (x + 8) / (float)Width; v1 = (y + 8) / (float)Height;
     }
 }
 
