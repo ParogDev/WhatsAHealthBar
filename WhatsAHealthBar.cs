@@ -56,6 +56,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private string? _suppressed = "not in game", _area, _previewFocus, _poolProblem;
     private double _poolProblemAt;
     private int _peakDrawn, _wanted, _withStatuses, _invulnerable, _withDot;
+    private uint _classifyPass;
 
     // Information layers: the lists compiled at most once per change (UI, bridge), swapped into the renderer.
     internal readonly object LayersLock = new();
@@ -274,6 +275,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             cull[(int)BarKind.Normal] = Math.Min(1, states.CullNormal.Value / 100f * mul);
         }
         _wanted = _withStatuses = _invulnerable = _withDot = 0;
+        _classifyPass++;
 
         foreach (var b in _bars)
         {
@@ -370,26 +372,41 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 b.NameFromPath = fromPath;
             }
 
-            // Stats: invulnerable, can't be culled, damage over time (one frame-cached dictionary read).
-            b.Invulnerable = b.CannotBeCulled = false;
-            var dotPerMin = 0;
-            var dotThroughEs = false;
-            if (invulnOn || cullOn || dotOn)
+            // Stats and buffs (invulnerable, can't be culled, damage over time, statuses): hostile monsters only (a player's
+            // stat dictionary is ~110 entries, ~20 us to read), uniques and rares every pass, magic and normal monsters every
+            // third pass, staggered by id (~3 Hz each; a running DoT's chunk keeps shrinking in between). Between reads the
+            // last values stand.
+            var hostile = b.Kind <= BarKind.Normal;
+            var fresh = hostile && (b.Kind <= BarKind.Rare || (_classifyPass + b.Id) % 3 == 0 || b.LayersReadAt < 0);
+            if (!hostile)
             {
-                b.StatsComp = e.GetComponent<Stats>();
-                var sd = b.StatsComp?.StatDictionary;
-                if (sd != null)
+                b.Invulnerable = b.CannotBeCulled = false;
+                b.DotRate = 0;
+            }
+            var dotPerMin = -1; // -1: not read this pass
+            var dotThroughEs = false;
+            if (fresh)
+            {
+                b.LayersReadAt = _now;
+                b.Invulnerable = b.CannotBeCulled = false;
+                dotPerMin = 0;
+                if (invulnOn || cullOn || dotOn)
                 {
-                    b.Invulnerable = sd.TryGetValue(GameStat.CannotBeDamaged, out var cbd) && cbd != 0;
-                    b.CannotBeCulled = sd.TryGetValue(GameStat.CannotBeCulled, out var cbc) && cbc != 0;
-                    if (dotOn && sd.TryGetValue(GameStat.IsCurrentlyTakingDamageOverTime, out var dot) && dot != 0)
+                    b.StatsComp = e.GetComponent<Stats>();
+                    var sd = b.StatsComp?.StatDictionary;
+                    if (sd != null)
                     {
-                        // PoE2 monsters report their DoT as damage to ES with the excess to life (read live 2026-10-12: the
-                        // "to life" stat stays 0 while this one carries the whole rate).
-                        sd.TryGetValue(GameStat.TotalDamageTakenPerMinuteToLife, out var toLife);
-                        sd.TryGetValue(GameStat.TotalDamageTakenPerMinuteToEnergyShieldExcessToLife, out var viaEs);
-                        dotPerMin = Math.Max(0, toLife) + Math.Max(0, viaEs);
-                        dotThroughEs = viaEs > 0;
+                        b.Invulnerable = sd.TryGetValue(GameStat.CannotBeDamaged, out var cbd) && cbd != 0;
+                        b.CannotBeCulled = sd.TryGetValue(GameStat.CannotBeCulled, out var cbc) && cbc != 0;
+                        if (dotOn && sd.TryGetValue(GameStat.IsCurrentlyTakingDamageOverTime, out var dot) && dot != 0)
+                        {
+                            // PoE2 monsters report their DoT as damage to ES with the excess to life (read live 2026-10-12: the
+                            // "to life" stat stays 0 while this one carries the whole rate).
+                            sd.TryGetValue(GameStat.TotalDamageTakenPerMinuteToLife, out var toLife);
+                            sd.TryGetValue(GameStat.TotalDamageTakenPerMinuteToEnergyShieldExcessToLife, out var viaEs);
+                            dotPerMin = Math.Max(0, toLife) + Math.Max(0, viaEs);
+                            dotThroughEs = viaEs > 0;
+                        }
                     }
                 }
             }
@@ -398,18 +415,23 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
             // Buffs: status icons, status patches and the DoT's time left, read only when one of those needs them.
             var icons = _renderer.IconsFor(b.Kind) && (b.Kind != BarKind.Minion || Settings.Icons.Kinds.Value == IconKinds.All);
-            b.StatusCount = 0;
             var horizon = 0f;
-            if ((icons && L.StatusById.Count > 0) || L.AnyStatusPatch || dotPerMin > 0)
+            var wantBuffs = (icons && L.StatusById.Count > 0) || L.AnyStatusPatch;
+            if (fresh || (!hostile && wantBuffs))
             {
-                b.BuffsComp = e.GetComponent<Buffs>();
-                var list = b.BuffsComp?.BuffsList;
-                if (list != null) horizon = ReadBuffs(b, list, L, dotPerMin > 0, icons || L.AnyStatusPatch);
-                for (var i = 0; i < b.StatusCount; i++) L.StatusPatches[b.Statuses![i].Rule]?.ApplyTo(ref look);
-                if (!icons && b.StatusCount > 0) b.StatusCount = 0; // read for the patches only
-                if (look.Hide) { b.Why = Why.StatusHidden; continue; }
-                if (b.StatusCount > 0) _withStatuses++;
+                b.StatusCount = 0;
+                if (wantBuffs || dotPerMin > 0)
+                {
+                    b.BuffsComp = e.GetComponent<Buffs>();
+                    var list = b.BuffsComp?.BuffsList;
+                    if (list != null) horizon = ReadBuffs(b, list, L, dotPerMin > 0, wantBuffs);
+                }
             }
+            for (var i = 0; i < b.StatusCount; i++)
+                if (b.Statuses![i].Rule < L.StatusPatches.Length) L.StatusPatches[b.Statuses[i].Rule]?.ApplyTo(ref look);
+            if (look.Hide) { b.Why = Why.StatusHidden; continue; }
+            if (icons && b.StatusCount > 0) _withStatuses++;
+            b.ShowIcons = icons;
 
             if (b.Invulnerable && invulnOn)
             {
@@ -419,15 +441,15 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 look.Grey = look.Hatch = true;
             }
             if (hidden && !b.Invulnerable) look.Opacity *= 0.35f;
-            b.CullAt = cullOn && !b.CannotBeCulled && b.Kind <= BarKind.Normal ? cull[(int)b.Kind] : 0;
+            b.CullAt = cullOn && !b.CannotBeCulled && hostile ? cull[(int)b.Kind] : 0;
             if (dotPerMin > 0)
             {
                 b.DotRate = dotPerMin / 60f;
                 b.DotUntil = _now + (horizon > 0 ? horizon : Settings.Dot.FallbackSeconds.Value);
                 b.DotThroughEs = dotThroughEs;
-                _withDot++;
             }
-            else b.DotRate = 0;
+            else if (dotPerMin == 0 || !dotOn) b.DotRate = 0;
+            if (b.DotRate > 0) _withDot++;
 
             b.Look = look;
             b.TopZ = -b.Render.Bounds.Z;
@@ -818,7 +840,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             }
             else b.DotRate = 0;
         }
-        if (!_renderer.IconsFor(b.Kind)) b.StatusCount = 0;
+        b.ShowIcons = _renderer.IconsFor(b.Kind);
         var cullOn = states.Cullable.Value != StateModes.Off;
         var mul = states.CullMultiplier.Value;
         b.CullAt = !cullOn || b.Invulnerable ? 0 : Math.Min(1, b.Kind switch

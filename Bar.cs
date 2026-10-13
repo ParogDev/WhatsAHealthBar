@@ -108,6 +108,10 @@ public sealed class Bar
     /// <summary>Statuses found at the last classify pass (icons), up to the array's length.</summary>
     public StatusHit[]? Statuses;
     public int StatusCount;
+    /// <summary>The kind shows icons (else the statuses were read for their patches only).</summary>
+    public bool ShowIcons;
+    /// <summary>When stats and buffs were last read (staggered for magic and normal monsters); -1: never.</summary>
+    public double LayersReadAt = -1;
 
     /// <summary>Damage over time: pool loss per second and when the longest running DoT ends (per frame: <see cref="DotLossShown"/>).</summary>
     public float DotRate, DotLossShown;

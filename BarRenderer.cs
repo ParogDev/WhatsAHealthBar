@@ -443,7 +443,7 @@ public sealed class BarRenderer
             }
         }
 
-        if (b.StatusCount > 0 && _icons && b.Kind <= _iconsUpTo && AtlasId != IntPtr.Zero)
+        if (b.StatusCount > 0 && b.ShowIcons && _icons && AtlasId != IntPtr.Zero)
         {
             // Debuffs first; buffs at the same anchor start past the debuff block instead of on top of it.
             var left = x0 - _outlineW;
