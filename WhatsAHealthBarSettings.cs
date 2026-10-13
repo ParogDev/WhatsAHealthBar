@@ -92,6 +92,7 @@ public sealed class WhatsAHealthBarSettings : ISettings
                       "Right-click the label to restore the PoE2 defaults")]
     [MenuTab("Status icons", Last = true)]
     [MenuList(ItemName = "status", Summary = nameof(StatusRule.Label), Detail = nameof(StatusRule.Id))]
+    [IgnoreMenu]   // the HUD's own menu builder can't draw a list; SettingsMenu draws an ignored [MenuList] collection
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<StatusRule> Statuses { get; set; } = StatusDefaults.Make();
 
@@ -100,6 +101,7 @@ public sealed class WhatsAHealthBarSettings : ISettings
                        "The first enabled match wins, so order matters. The why overlay (Debug) shows each monster's path")]
     [MenuTab("Overrides")]
     [MenuList(ItemName = "override", Summary = nameof(OverrideRule.Name), Detail = nameof(OverrideRule.Pattern))]
+    [IgnoreMenu]
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<OverrideRule> Overrides { get; set; } = new();
 
@@ -108,6 +110,7 @@ public sealed class WhatsAHealthBarSettings : ISettings
                            "overlay (Debug tab) adds one with a click on the monster")]
     [MenuTab("Ignore")]
     [MenuList(ItemName = "path", Chips = true)]
+    [IgnoreMenu]
     [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
     public List<string> IgnoredPaths { get; set; } = new();
 
