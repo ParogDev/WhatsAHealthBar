@@ -367,12 +367,15 @@ public sealed class BarRenderer
             if (_lifeFill - cx0 >= 1)
             {
                 Rect(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(_dotColor, a));
-                Hatch(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(0xFFFFFFFF, a * 0.16f), StatusAtlas.HatchFine);
+                Hatch(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(0xFFFFFFFF, a * 0.16f), StatusAtlas.HatchFine, true);
                 if (cx0 > _lifeRX0 + 1) Rect(cx0, _lifeY0, cx0 + 1, _lifeY1, Mul(Lerp(life, 0xFFFFFFFF, 0.6f), a * 0.9f));
             }
         }
-        // Invulnerable (or a patch asking for it): light diagonal stripes across the whole bar, a shield rather than a wound.
-        if (look.Hatch) Hatch(x0, y0, x1, y1, Mul(0xFFFFFFFF, a * 0.2f), StatusAtlas.HatchCoarse);
+        // Invulnerable (or a patch asking for it): light diagonal stripes across the whole bar, a shield rather than a
+        // wound. As quads, in this bar's own place in the draw order: textured stripes would go out after every bar's
+        // quads and stripe a nearer bar overlapping this one, telling the player that monster is immune. One boss at a
+        // time pays the ~220 quads.
+        if (look.Hatch) Hatch(x0, y0, x1, y1, Mul(0xFFFFFFFF, a * 0.2f), StatusAtlas.HatchCoarse, false);
 
         // Shading and gloss over the whole bar (a glass tube): dark from mid to bottom, white from top to mid.
         var inset = r > 0 ? 1 : 0;
@@ -501,23 +504,26 @@ public sealed class BarRenderer
         var hits = b.Statuses!;
         var n = 0;
         var maxScale = 0f;
+        var anyStacks = false;
         for (var i = 0; i < b.StatusCount && n < _iconMax; i++)
         {
             var rule = hits[i].Rule;
             if ((uint)rule >= (uint)L.Statuses.Length || L.Statuses[rule].Debuff != debuffs) continue;
             n++;
             maxScale = MathF.Max(maxScale, Math.Clamp(L.Statuses[rule].Scale, 0.25f, 4f));
+            anyStacks |= hits[i].Stacks > 1;
         }
         if (n == 0) return 0;
         // With plates, each cell is the icon plus its plate's 2 px rim; the gap keeps neighbouring rims (or a bare icon's
-        // time line, 2 px under it) apart. A stacks pill hangs above its icon, so with stacks on every row gets that
-        // much headroom and the block reserves it, instead of the pill landing on the row above or on the bar.
+        // time line, 2 px under it) apart. A stacks pill hangs above its icon, so when a status in the block has stacks
+        // every row gets that much headroom and the block reserves it, instead of the pill landing on the row above or
+        // on the bar.
         var rim = _iconPlate ? 2f : 0f;
         var gap = _iconPlate ? 3f : 4f;
         var cell = MathF.Round(_iconSize * maxScale) + 2 * rim;
         var fs = MathF.Max(10, MathF.Round((cell - 2 * rim) * 0.6f));
         var pillH = MathF.Round(fs + 2);
-        var head = _showStacks ? pillH - 1 : 0;
+        var head = _showStacks && anyStacks ? pillH - 1 : 0;
         var pitch = cell + gap + head;
         var cols = Math.Min(_iconCols, n);
         var rows = (n + _iconCols - 1) / _iconCols;
@@ -588,9 +594,9 @@ public sealed class BarRenderer
                     var frac = MathF.Min(1, remaining / 8f);
                     var lw = MathF.Max(1, MathF.Round((size - 2) * frac));
                     Rect(ix + 1, iy + size, ix + 1 + lw, iy + size + 2, Mul(tintFull, a * 0.9f));
-                    if (_showDuration)
+                    var left10 = Math.Min((int)(remaining * 10), Tenths.Length - 1);
+                    if (_showDuration && left10 > 0)
                     {
-                        var left10 = Math.Min((int)(remaining * 10), Tenths.Length - 1);
                         var s = Tenths[left10];
                         var tw = LabelWidth(s) * fs / _fontSize;
                         TextAt(new Vector2(MathF.Round(ix + (size - tw) * 0.5f), MathF.Round(iy + size - fs - 1)), Mul(0xFFFFFFFF, a), s, fs);
@@ -633,20 +639,19 @@ public sealed class BarRenderer
     }
 
     /// <summary>
-    /// Diagonal stripes across a rectangle (invulnerable bars, the damage-over-time chunk): windows into the atlas's tiling
-    /// hatch cell, one textured quad per 64 px of width, drawn 1:1 so the stripes stay crisp and seamless. Without the
-    /// atlas, 2 px steps as quads (a 150 x 16 bar is ~220 of them; the textured path is 3).
+    /// Diagonal stripes across a rectangle. <paramref name="textured"/>: windows into the atlas's tiling hatch cell, one
+    /// quad per 64 px, drawn 1:1 so the stripes stay crisp and seamless, but drawn with the icons after every bar's quads
+    /// (right for the small damage-over-time chunk). Otherwise, or without the atlas, 2 px steps as quads in this bar's
+    /// own place in the draw order (a 150 x 16 bar is ~220 of them; the textured path is 3).
     /// </summary>
-    private void Hatch(float x0, float y0, float x1, float y1, uint col, int pattern)
+    private void Hatch(float x0, float y0, float x1, float y1, uint col, int pattern, bool textured)
     {
         var h = y1 - y0;
         // Not in a sub-pixel blend copy: the translucent stripes would stack with the base copy's (the same reason the
         // copies keep opaque quads only).
         if (h < 2 || x1 - x0 < 1 || _opaqueOnly) return;
-        if (AtlasId != IntPtr.Zero)
+        if (textured && AtlasId != IntPtr.Zero)
         {
-            // Textured stripes go out with the icons, after every bar's quads: a nearer bar overlapping a hatched one is
-            // striped across too (the same holds for icons); rare enough that the ~70x fewer quads win.
             for (var y = y0; y < y1; y += StatusAtlas.Cell)
             {
                 var ch = MathF.Min(y1 - y, StatusAtlas.Cell);
@@ -824,7 +829,7 @@ public sealed class BarRenderer
             if (why != null) Fallback(dl, why, record);
             else
             {
-                if (record) Path = "batched";
+                if (record) { Path = "batched"; _fallbackWhy = null; }
                 var uv = ImGui.GetIO().Fonts.TexUvWhitePixel;
                 int u = BitConverter.SingleToInt32Bits(uv.X), v = BitConverter.SingleToInt32Bits(uv.Y);
                 for (var done = 0; done < _quadCount;)

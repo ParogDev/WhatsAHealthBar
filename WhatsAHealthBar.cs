@@ -83,6 +83,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         GameController.PluginBridge.SaveMethod(SearchBuffsName, (Func<string, string>)SearchBuffsFromBridge);
         GameController.PluginBridge.SaveMethod(WhyName, (Func<string, string>)WhyFromBridge);
         Migrate();
+        CompileLayers(); // now, not on the first Tick: a plugin disabled at start still shows its settings panel
         LoadAtlas();
         AreaChange(GameController.Area.CurrentArea);
         return true;
@@ -698,28 +699,53 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     // ---- What the settings panel reads and drives (main thread, inside the HUD's menu draw) ----
 
     internal BarRenderer Renderer => _renderer;
-    internal double Now => _now;
-    internal float Dt => _dt;
     internal Random Rng => _rng;
     internal float ResolutionScale => _resolutionScale;
     internal string? Suppressed => _suppressed;
     internal string? AtlasProblem => _atlasProblem;
+    internal bool Previewing => _now < _previewUntil;
+    internal int LayersVersion => _layersVersion;
+    internal string? PoolProblemNow => _now - _poolProblemAt < 30 ? _poolProblem : null;
     internal AnimParams AnimNow() => Anim();
     /// <param name="now">The clock the sample will be stepped on (the panel's is ImGui's, not this plugin's).</param>
     internal PoolSim MakeSim(BarKind kind, double now) => Sim(kind, now);
     internal void RequestPreview(double seconds, string? focus) => _previewRequests.Enqueue((seconds, focus, 0));
 
-    /// <summary>The live numbers the Debug tab shows (a copy, so the panel formats them at its own rate).</summary>
-    internal void Snapshot(ref PanelNumbers n)
+    private static readonly string[] KindKeys = { "unique", "rare", "magic", "normal", "minion", "player", "self" };
+
+    /// <summary>The counts, into a DTO the caller owns: GetState makes a new one, the panel's Debug tab reuses its own.</summary>
+    internal HealthBarCountsDto FillCounts(HealthBarCountsDto c)
     {
-        n.Tracked = _bars.Count; n.Wanted = _wanted; n.Drawn = _drawList.Count; n.PeakDrawn = _peakDrawn;
-        n.WithStatuses = _withStatuses; n.Invulnerable = _invulnerable; n.WithDot = _withDot;
-        n.TickUs = _tickUs; n.TickMaxUs = Math.Max(_tickMax, _tickMaxNext); n.RenderUs = _renderUs; n.RenderMaxUs = Math.Max(_renderMax, _renderMaxNext);
-        n.ClassifyUs = _classifyUs; n.BuildUs = _buildUs; n.FlushUs = _flushUs;
-        n.Quads = _renderer.LastQuads; n.Icons = _renderer.LastIcons; n.RenderPath = _renderer.Path;
-        n.LagMs = _motion.Lag * 1000; n.JitterShownPx = _motion.JitterShown;
-        n.Previewing = _now < _previewUntil; n.LayersVersion = _layersVersion;
-        n.PoolProblem = _now - _poolProblemAt < 30 ? _poolProblem : null;
+        c.Tracked = _bars.Count; c.Wanted = _wanted; c.Drawn = _drawList.Count; c.PeakDrawn = _peakDrawn;
+        c.WithStatuses = _withStatuses; c.Invulnerable = _invulnerable; c.WithDot = _withDot;
+        for (var k = 0; k < KindKeys.Length; k++) c.ByKind[KindKeys[k]] = _byKind[k];
+        return c;
+    }
+
+    /// <summary>The plugin's own timings, the same way.</summary>
+    internal HealthBarTimingsDto FillTimings(HealthBarTimingsDto t)
+    {
+        var barsNow = _drawList.Count + (Previewing ? _previewSims.Length + _stressSims.Length : 0);
+        t.TickUs = Math.Round(_tickUs, 1);
+        t.TickMaxUs = Math.Round(Math.Max(_tickMax, _tickMaxNext), 1);
+        t.RenderUs = Math.Round(_renderUs, 1);
+        t.RenderMaxUs = Math.Round(Math.Max(_renderMax, _renderMaxNext), 1);
+        t.ClassifyUs = Math.Round(_classifyUs, 1);
+        t.PerBarNs = barsNow > 0 ? Math.Round((_tickUs + _renderUs) * 1000 / barsNow) : 0;
+        t.ClassifyHz = Settings.Visibility.ClassifyHz.Value;
+        t.Quads = _renderer.LastQuads;
+        t.Icons = _renderer.LastIcons;
+        t.BuildUs = Math.Round(_buildUs, 1);
+        t.FlushUs = Math.Round(_flushUs, 1);
+        t.RenderPath = _renderer.Path;
+        var m = t.Motion;
+        m.Interpolate = Settings.Motion.Interpolate.Value;
+        m.SubPixel = Settings.Motion.SubPixel.Value;
+        m.LagMs = Math.Round(_motion.Lag * 1000, 1);
+        m.HudFramesPerGameFrame = Math.Round(_motion.FramesPerAdvance, 2);
+        m.JitterRawPx = Math.Round(_motion.JitterRaw, 2);
+        m.JitterShownPx = Math.Round(_motion.JitterShown, 2);
+        return t;
     }
 
     internal void Ignore(string pathKey)
@@ -1043,50 +1069,16 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
     private string GetStateJson()
     {
-        var previewing = _now < _previewUntil;
+        var previewing = Previewing;
         var previewBars = previewing ? _previewSims.Length + _stressSims.Length : 0;
-        var barsNow = _drawList.Count + previewBars;
         var rules = _renderer.Rules;
         var state = new HealthBarStateDto
         {
             Enabled = Settings.Enable,
             Suppressed = _suppressed,
             Area = _area,
-            Counts = new HealthBarCountsDto
-            {
-                Tracked = _bars.Count,
-                Wanted = _wanted,
-                Drawn = _drawList.Count,
-                PeakDrawn = _peakDrawn,
-                ByKind = Enum.GetValues<BarKind>().ToDictionary(k => k.ToString().ToLowerInvariant(), k => _byKind[(int)k]),
-                WithStatuses = _withStatuses,
-                Invulnerable = _invulnerable,
-                WithDot = _withDot,
-            },
-            Timings = new HealthBarTimingsDto
-            {
-                TickUs = Math.Round(_tickUs, 1),
-                TickMaxUs = Math.Round(Math.Max(_tickMax, _tickMaxNext), 1),
-                RenderUs = Math.Round(_renderUs, 1),
-                RenderMaxUs = Math.Round(Math.Max(_renderMax, _renderMaxNext), 1),
-                ClassifyUs = Math.Round(_classifyUs, 1),
-                PerBarNs = barsNow > 0 ? Math.Round((_tickUs + _renderUs) * 1000 / barsNow) : 0,
-                ClassifyHz = Settings.Visibility.ClassifyHz.Value,
-                Quads = _renderer.LastQuads,
-                Icons = _renderer.LastIcons,
-                BuildUs = Math.Round(_buildUs, 1),
-                FlushUs = Math.Round(_flushUs, 1),
-                RenderPath = _renderer.Path,
-                Motion = new HealthBarMotionDto
-                {
-                    Interpolate = Settings.Motion.Interpolate.Value,
-                    SubPixel = Settings.Motion.SubPixel.Value,
-                    LagMs = Math.Round(_motion.Lag * 1000, 1),
-                    HudFramesPerGameFrame = Math.Round(_motion.FramesPerAdvance, 2),
-                    JitterRawPx = Math.Round(_motion.JitterRaw, 2),
-                    JitterShownPx = Math.Round(_motion.JitterShown, 2),
-                },
-            },
+            Counts = FillCounts(new HealthBarCountsDto()),
+            Timings = FillTimings(new HealthBarTimingsDto()),
             Preview = new HealthBarPreviewDto
             {
                 Active = previewing,
@@ -1103,7 +1095,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
                 AtlasProblem = _atlasProblem,
                 Problems = rules.Problems.Count > 0 ? rules.Problems : null,
             },
-            PoolProblem = _now - _poolProblemAt < 30 ? _poolProblem : null,
+            PoolProblem = PoolProblemNow,
         };
         lock (_kills) state.Kills = _kills.ToList();
         return JsonConvert.SerializeObject(state);

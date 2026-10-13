@@ -33,6 +33,7 @@ public static class SettingsPanel
     private const float TrailingW = 190f;
     private static string _search = "", _ignoreInput = "", _iconFilter = "";
     private static string? _searchDone;
+    private static double _searchRetryAt;
     private static readonly List<BuffDefDto> _searchHits = new();
     private static int _searchTotal;
     private static readonly Dictionary<string, string?> RegexErrors = new();
@@ -264,7 +265,8 @@ public static class SettingsPanel
         var q = _search.Trim();
         if (q.Length >= 2)
         {
-            if (q != _searchDone) Search(plugin, q);
+            // Again when the text changes; while the catalog is empty (not in game yet), a retry every half second.
+            if (q != _searchDone && ImGui.GetTime() >= _searchRetryAt) Search(plugin, q);
             if (_searchHits.Count == 0) Ui.Note(_searchTotal < 0 ? "Files.BuffDefinitions is empty (not in game yet?)" : "nothing matches");
             ImGui.BeginChild("##whaHits", new Vector2(0, Math.Min(_searchHits.Count, 8) * (ImGui.GetFrameHeightWithSpacing()) + 4), ImGuiChildFlags.None);
             for (var i = 0; i < _searchHits.Count; i++)
@@ -302,25 +304,14 @@ public static class SettingsPanel
             var open = _openStatus == i;
             Ui.BeginCard("##st", open);
             var en = r.Enabled;
-            if (ImGui.Checkbox("##en", ref en)) { r.Enabled = en; changed = true; }
-            Ui.Tip("Shown as an icon when on");
-            ImGui.SameLine();
+            if (EnableBox(ref en, "Shown as an icon when on")) { r.Enabled = en; changed = true; }
             var icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
             var tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
             Ui.IconImage(atlas, icon, r.Badge == Badges.Gem ? 0 : 1, en ? tint : Ui.Alpha(tint, 0.35f), 20);
             ImGui.SameLine();
-            if (ImGui.Selectable(r.Label.Length > 0 ? r.Label : r.Id, open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0)))
-                _openStatus = open ? -1 : i;
-            Ui.Tip(r.Id);
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
-            Ui.Badge(r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64);
-            ImGui.SameLine();
-            if (ImGui.ArrowButton("##up", ImGuiDir.Up) && i > 0) { (s.Statuses[i - 1], s.Statuses[i]) = (s.Statuses[i], s.Statuses[i - 1]); if (open) _openStatus = i - 1; changed = true; }
-            ImGui.SameLine();
-            if (ImGui.ArrowButton("##dn", ImGuiDir.Down) && i < s.Statuses.Count - 1) { (s.Statuses[i + 1], s.Statuses[i]) = (s.Statuses[i], s.Statuses[i + 1]); if (open) _openStatus = i + 1; changed = true; }
-            ImGui.SameLine();
-            if (ImGui.SmallButton("x")) { s.Statuses.RemoveAt(i); _openStatus = _openStatus == i ? -1 : _openStatus > i ? _openStatus - 1 : _openStatus; changed = true; Ui.EndCard(); ImGui.PopID(); break; }
-            Ui.Tip("Remove this status");
+            var action = CardRow(r.Label.Length > 0 ? r.Label : r.Id, r.Id, r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64, open, i == 0, i == s.Statuses.Count - 1);
+            changed |= Apply(action, s.Statuses, i, ref _openStatus);
+            if (action == RowAction.Remove) { Ui.EndCard(); ImGui.PopID(); break; }
             if (open) changed |= StatusBody(r, atlas);
             Ui.EndCard();
             ImGui.PopID();
@@ -342,8 +333,8 @@ public static class SettingsPanel
         _searchHits.Clear();
         _searchTotal = 0;
         var catalog = plugin.BuffCatalog();
-        // An empty catalog (not in game yet) isn't a result to cache: the search runs again next frame until it reads.
-        if (catalog.Count == 0) { _searchTotal = -1; _searchDone = null; return; }
+        // An empty catalog (not in game yet) isn't a result to cache: the search runs again, half a second later.
+        if (catalog.Count == 0) { _searchTotal = -1; _searchDone = null; _searchRetryAt = ImGui.GetTime() + 0.5; return; }
         foreach (var d in catalog)
         {
             if (!d.Id.Contains(q, StringComparison.OrdinalIgnoreCase) && !d.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
@@ -475,9 +466,7 @@ public static class SettingsPanel
             var open = _openOverride == i;
             Ui.BeginCard("##ov", open);
             var en = o.Enabled;
-            if (ImGui.Checkbox("##en", ref en)) { o.Enabled = en; changed = true; }
-            Ui.Tip("Matched when on");
-            ImGui.SameLine();
+            if (EnableBox(ref en, "Matched when on")) { o.Enabled = en; changed = true; }
             var err = RegexError(o.Pattern);
             var dl = ImGui.GetWindowDrawList();
             var dot = ImGui.GetCursorScreenPos() + new Vector2(5, ImGui.GetFrameHeight() * 0.5f);
@@ -485,18 +474,9 @@ public static class SettingsPanel
             ImGui.Dummy(new Vector2(12, ImGui.GetFrameHeight()));
             Ui.Tip(o.Pattern.Length == 0 ? "No pattern yet: matches nothing" : err ?? "Valid regex");
             ImGui.SameLine();
-            if (ImGui.Selectable(o.Name.Length > 0 ? o.Name : "(unnamed)", open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0)))
-                _openOverride = open ? -1 : i;
-            Ui.Tip(o.Pattern.Length > 0 ? o.Pattern : "Click to edit");
-            ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
-            Ui.Badge(o.Match == "Name" ? "name" : "path", Ui.Faint);
-            ImGui.SameLine();
-            if (ImGui.ArrowButton("##up", ImGuiDir.Up) && i > 0) { (s.Overrides[i - 1], s.Overrides[i]) = (s.Overrides[i], s.Overrides[i - 1]); if (open) _openOverride = i - 1; changed = true; }
-            ImGui.SameLine();
-            if (ImGui.ArrowButton("##dn", ImGuiDir.Down) && i < s.Overrides.Count - 1) { (s.Overrides[i + 1], s.Overrides[i]) = (s.Overrides[i], s.Overrides[i + 1]); if (open) _openOverride = i + 1; changed = true; }
-            ImGui.SameLine();
-            if (ImGui.SmallButton("x")) { s.Overrides.RemoveAt(i); _openOverride = _openOverride == i ? -1 : _openOverride > i ? _openOverride - 1 : _openOverride; changed = true; Ui.EndCard(); ImGui.PopID(); break; }
-            Ui.Tip("Remove this override");
+            var action = CardRow(o.Name.Length > 0 ? o.Name : "(unnamed)", o.Pattern.Length > 0 ? o.Pattern : "Click to edit", o.Match == "Name" ? "name" : "path", Ui.Faint, open, i == 0, i == s.Overrides.Count - 1);
+            changed |= Apply(action, s.Overrides, i, ref _openOverride);
+            if (action == RowAction.Remove) { Ui.EndCard(); ImGui.PopID(); break; }
             if (open)
             {
                 ImGui.Separator();
@@ -592,6 +572,53 @@ public static class SettingsPanel
 
     // ---- Shared pieces ----
 
+    private enum RowAction { None, Toggle, Up, Down, Remove }
+
+    /// <summary>The enable checkbox that starts a list card's header row.</summary>
+    private static bool EnableBox(ref bool enabled, string tip)
+    {
+        var changed = ImGui.Checkbox("##en", ref enabled);
+        Ui.Tip(tip);
+        ImGui.SameLine();
+        return changed;
+    }
+
+    /// <summary>
+    /// The rest of a list card's header row: the title (click opens or closes the card), a kind badge, up, down and
+    /// remove, with <see cref="TrailingW"/> kept on the right so nothing clips. The caller applies the action.
+    /// </summary>
+    private static RowAction CardRow(string title, string? titleTip, string badge, uint badgeColor, bool open, bool first, bool last)
+    {
+        var action = RowAction.None;
+        if (ImGui.Selectable(title, open, ImGuiSelectableFlags.None, new Vector2(ImGui.GetContentRegionAvail().X - TrailingW, 0))) action = RowAction.Toggle;
+        Ui.Tip(titleTip);
+        ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
+        Ui.Badge(badge, badgeColor);
+        ImGui.SameLine();
+        if (ImGui.ArrowButton("##up", ImGuiDir.Up) && !first) action = RowAction.Up;
+        Ui.Tip("Move up (earlier in the order)");
+        ImGui.SameLine();
+        if (ImGui.ArrowButton("##dn", ImGuiDir.Down) && !last) action = RowAction.Down;
+        Ui.Tip("Move down");
+        ImGui.SameLine();
+        if (ImGui.SmallButton("x")) action = RowAction.Remove;
+        Ui.Tip("Remove it");
+        return action;
+    }
+
+    /// <summary>Applies a header action to the list and the open card's index. True when the list changed; after Remove the caller stops iterating.</summary>
+    private static bool Apply<T>(RowAction action, List<T> list, int i, ref int open)
+    {
+        switch (action)
+        {
+            case RowAction.Toggle: open = open == i ? -1 : i; return false;
+            case RowAction.Up: (list[i - 1], list[i]) = (list[i], list[i - 1]); if (open == i) open = i - 1; else if (open == i - 1) open = i; return true;
+            case RowAction.Down: (list[i + 1], list[i]) = (list[i], list[i + 1]); if (open == i) open = i + 1; else if (open == i + 1) open = i; return true;
+            case RowAction.Remove: list.RemoveAt(i); open = open == i ? -1 : open > i ? open - 1 : open; return true;
+            default: return false;
+        }
+    }
+
     /// <summary>A text field row; by ref rather than a setter lambda, so nothing is allocated per frame.</summary>
     private static bool Field(string label, string tip, ref string value)
     {
@@ -674,7 +701,9 @@ public static class SettingsPanel
         public string? PoolProblem;
         private double _at = -1;
         private int _problems = -1, _drawn = -1;
-        private PanelNumbers _n;
+        // The same DTOs GetState answers with, kept and refilled, so the panel and the bridge can't disagree.
+        private readonly HealthBarCountsDto _c = new();
+        private readonly HealthBarTimingsDto _t = new();
         private readonly Dictionary<TextNode, (string src, TextTemplate template, string text, double at)> _samples = new(ReferenceEqualityComparer.Instance);
 
         public void Refresh(WhatsAHealthBar plugin)
@@ -684,20 +713,21 @@ public static class SettingsPanel
             if (problems != _problems) { _problems = problems; ProblemsBadge = problems == 1 ? "1 problem" : I(problems) + " problems"; }
             if (now - _at < 0.25 && _at >= 0) return;
             _at = now;
-            plugin.Snapshot(ref _n);
-            if (_n.Drawn != _drawn) { _drawn = _n.Drawn; DrawnBadge = _drawn == 1 ? "1 bar" : I(_drawn) + " bars"; }
-            Lines[0] = I(_n.Tracked) + " / " + I(_n.Wanted) + " / " + I(_n.Drawn);
-            Lines[1] = I(_n.PeakDrawn);
-            Lines[2] = I(_n.WithStatuses) + " / " + I(_n.Invulnerable) + " / " + I(_n.WithDot);
-            Lines[3] = F(_n.TickUs) + " / " + F(_n.TickMaxUs) + " us";
-            Lines[4] = F(_n.RenderUs) + " / " + F(_n.RenderMaxUs) + " us";
-            Lines[5] = F(_n.ClassifyUs) + " us";
-            Lines[6] = F(_n.BuildUs) + " / " + F(_n.FlushUs) + " us";
-            Lines[7] = I(_n.Quads) + " / " + I(_n.Icons) + (_n.Previewing ? "  (previewing)" : "");
-            Lines[8] = _n.RenderPath;
-            Lines[9] = F(_n.LagMs) + " ms / " + F(_n.JitterShownPx) + " px";
-            Lines[10] = I(_n.LayersVersion);
-            PoolProblem = _n.PoolProblem;
+            var c = plugin.FillCounts(_c);
+            var t = plugin.FillTimings(_t);
+            if (c.Drawn != _drawn) { _drawn = c.Drawn; DrawnBadge = _drawn == 1 ? "1 bar" : I(_drawn) + " bars"; }
+            Lines[0] = I(c.Tracked) + " / " + I(c.Wanted) + " / " + I(c.Drawn);
+            Lines[1] = I(c.PeakDrawn);
+            Lines[2] = I(c.WithStatuses) + " / " + I(c.Invulnerable) + " / " + I(c.WithDot);
+            Lines[3] = F(t.TickUs) + " / " + F(t.TickMaxUs) + " us";
+            Lines[4] = F(t.RenderUs) + " / " + F(t.RenderMaxUs) + " us";
+            Lines[5] = F(t.ClassifyUs) + " us";
+            Lines[6] = F(t.BuildUs) + " / " + F(t.FlushUs) + " us";
+            Lines[7] = I(t.Quads) + " / " + I(t.Icons) + (plugin.Previewing ? "  (previewing)" : "");
+            Lines[8] = t.RenderPath;
+            Lines[9] = F(t.Motion.LagMs) + " ms / " + F(t.Motion.JitterShownPx) + " px";
+            Lines[10] = I(plugin.LayersVersion);
+            PoolProblem = plugin.PoolProblemNow;
         }
 
         /// <summary>What a template shows on the sample bar right now (rebuilt when the text or the sample's values change, at most 4 Hz).</summary>

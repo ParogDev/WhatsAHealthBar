@@ -301,11 +301,11 @@ internal static class Ui
     }
 
     /// <summary>A small chip (token, path): click to act. Wraps onto the next line when the row is full.</summary>
-    public static bool Chip(string text, string? tip, bool wrap, float reserveRight = 0)
+    public static bool Chip(string text, string? tip, bool wrap)
     {
         if (wrap)
         {
-            var next = ImGui.GetItemRectMax().X + ImGui.GetStyle().ItemSpacing.X + ImGui.CalcTextSize(text).X + 12 + reserveRight;
+            var next = ImGui.GetItemRectMax().X + ImGui.GetStyle().ItemSpacing.X + ImGui.CalcTextSize(text).X + 12;
             if (next < ImGui.GetWindowPos().X + ImGui.GetWindowContentRegionMax().X) ImGui.SameLine();
         }
         ImGui.PushStyleColor(ImGuiCol.Button, 0xFF242130);

@@ -274,7 +274,8 @@ public sealed class StatusIconSettings
     [Menu("Show stacks")]
     public ToggleNode ShowStacks { get; set; } = new(true);
 
-    [Menu("Show duration", "Seconds left under each icon with a timer")]
+    [Menu("Show duration", "The seconds left as text over the lower part of each timed icon. The thin line under a timed icon " +
+                           "(full at 8 s, draining to nothing) is always drawn")]
     public ToggleNode ShowDuration { get; set; } = new(false);
 }
 
