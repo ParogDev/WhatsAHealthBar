@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Drawing;
 using ExileCore2.Shared.Attributes;
 using ExileCore2.Shared.Interfaces;
@@ -23,11 +24,24 @@ public sealed class WhatsAHealthBarSettings : ISettings
     [Menu("Look")]
     public LookSettings Look { get; set; } = new();
 
+    [Menu("Text", "Names and data texts above, on and below the bars (per kind templates are in each kind's group)")]
+    public TextSettings Text { get; set; } = new();
+
+    [Menu("Status icons", "Ailments, curses and buffs on monsters as icons by the bar. The list of statuses is edited below the " +
+                          "settings (Statuses), or from the control center")]
+    public StatusIconSettings Icons { get; set; } = new();
+
+    [Menu("States", "How invulnerable, cullable and hidden monsters' bars look")]
+    public StateSettings States { get; set; } = new();
+
+    [Menu("Damage over time", "Shows the life that running ailments (ignite, bleed, poison...) will still take")]
+    public DotSettings Dot { get; set; } = new();
+
     [Menu("Unique enemies")]
-    public KindSettings Unique { get; set; } = KindSettings.Make(true, 150, 16, Color.FromArgb(255, 232, 120, 36), 10, true);
+    public KindSettings Unique { get; set; } = KindSettings.Make(true, 150, 16, Color.FromArgb(255, 232, 120, 36), 10, true, "{name}");
 
     [Menu("Rare enemies")]
-    public KindSettings Rare { get; set; } = KindSettings.Make(true, 118, 14, Color.FromArgb(255, 226, 196, 52), 4, true);
+    public KindSettings Rare { get; set; } = KindSettings.Make(true, 118, 14, Color.FromArgb(255, 226, 196, 52), 4, true, "{name}");
 
     [Menu("Magic enemies")]
     public KindSettings Magic { get; set; } = KindSettings.Make(true, 86, 10, Color.FromArgb(255, 92, 132, 255), 0, false);
@@ -49,6 +63,24 @@ public sealed class WhatsAHealthBarSettings : ISettings
 
     [Menu("Bridge")]
     public BridgeSettings Bridge { get; set; } = new();
+
+    [Menu("Debug")]
+    public DebugSettings Debug { get; set; } = new();
+
+    /// <summary>Statuses shown as icons (PoE2 defaults from the game's own buff ids). Edited in the custom section and via the bridge.</summary>
+    [IgnoreMenu]
+    [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
+    public List<StatusRule> Statuses { get; set; } = StatusDefaults.Make();
+
+    /// <summary>Per-monster looks by metadata path or name regex, first match wins.</summary>
+    [IgnoreMenu]
+    [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
+    public List<OverrideRule> Overrides { get; set; } = new();
+
+    /// <summary>Metadata paths (without "@level") that never get a bar.</summary>
+    [IgnoreMenu]
+    [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
+    public List<string> IgnoredPaths { get; set; } = new();
 
     [JsonIgnore]
     [Menu("Preview in game", "Draws one sample bar per kind in the middle of the screen for 8 seconds, with fake hits and heals (also from the control center)")]
@@ -82,6 +114,9 @@ public sealed class VisibilitySettings
 
     [Menu("Hide full-life normals", "Normal enemies at full life draw no bar until they are hit")]
     public ToggleNode HideFullNormals { get; set; } = new(false);
+
+    [Menu("Hide untargetable", "No bar for monsters you can't target (decorations, emerging or submerged monsters). Uniques always keep theirs")]
+    public ToggleNode HideUntargetable { get; set; } = new(true);
 
     [Menu("Height offset", "Moves every bar up (negative) or down, in world units")]
     public RangeNode<int> ZOffset { get; set; } = new(0, -300, 300);
@@ -177,8 +212,139 @@ public sealed class LookSettings
     [Menu("Text")]
     public ColorNode TextColor { get; set; } = Color.FromArgb(255, 245, 240, 230);
 
-    [Menu("Culling marker %", "Draws a notch at this life % (culling strike threshold); 0 turns it off")]
+    /// <summary>
+    /// The old single culling marker (replaced by States > Cullable, per rarity). Read once at load: a value above 0 turns
+    /// the per-rarity notch on (the per-rarity thresholds replace the single %), then it is cleared.
+    /// </summary>
+    [IgnoreMenu]
     public RangeNode<int> CullPercent { get; set; } = new(0, 0, 30);
+}
+
+[Submenu(CollapsedByDefault = true)]
+public sealed class TextSettings
+{
+    [Menu("Abbreviate names longer than", "Characters; longer names keep the last word and initials (\"S. S. Captain\"). 0: never")]
+    public RangeNode<int> AbbreviateOver { get; set; } = new(20, 0, 40);
+
+    [Menu("Text size", "Multiplies the HUD font size for names and data texts")]
+    public RangeNode<float> Scale { get; set; } = new(1f, 0.6f, 2f);
+
+    [Menu("Shadow", "A dark copy one pixel down-right, so text reads on any background")]
+    public ToggleNode Shadow { get; set; } = new(true);
+
+    [Menu("DPS window (s)", "How quickly {dps} and {ttk} follow the damage: the time constant of the moving average")]
+    public RangeNode<float> DpsWindow { get; set; } = new(1.5f, 0.2f, 6f);
+}
+
+/// <summary>Where a block of status icons sits next to the bar.</summary>
+public static class Anchors
+{
+    public const string Above = "Above", Below = "Below", Left = "Left", Right = "Right";
+    public static readonly string[] All = { Above, Below, Left, Right };
+}
+
+[Submenu(CollapsedByDefault = true)]
+public sealed class StatusIconSettings
+{
+    [Menu("Show status icons")]
+    public ToggleNode Enabled { get; set; } = new(true);
+
+    [Menu("On", "Which bars get icons (buffs are read only for those)")]
+    public ListNode Kinds { get; set; } = new()
+        { Values = new() { IconKinds.RareUnique, IconKinds.MagicUp, IconKinds.Enemies, IconKinds.All }, Value = IconKinds.MagicUp };
+
+    [Menu("Debuffs at")]
+    public ListNode DebuffAnchor { get; set; } = new() { Values = new(Anchors.All), Value = Anchors.Above };
+
+    [Menu("Buffs at")]
+    public ListNode BuffAnchor { get; set; } = new() { Values = new(Anchors.All), Value = Anchors.Right };
+
+    [Menu("Icon size (px)", "At 1440p; scales with the bars")]
+    public RangeNode<int> Size { get; set; } = new(18, 8, 64);
+
+    [Menu("Columns", "Icons per row before wrapping")]
+    public RangeNode<int> Columns { get; set; } = new(6, 1, 12);
+
+    [Menu("Max icons", "Per block (debuffs, buffs)")]
+    public RangeNode<int> MaxIcons { get; set; } = new(6, 1, 12);
+
+    [Menu("Show stacks")]
+    public ToggleNode ShowStacks { get; set; } = new(true);
+
+    [Menu("Show duration", "Seconds left under each icon with a timer")]
+    public ToggleNode ShowDuration { get; set; } = new(false);
+}
+
+public static class IconKinds
+{
+    public const string RareUnique = "Rares and uniques", MagicUp = "Magic and up", Enemies = "All enemies", All = "Everything";
+}
+
+public static class StateModes
+{
+    public const string Off = "Off", GreyHatch = "Grey and hatch", Hide = "Hide", Notch = "Notch", NotchTint = "Notch and tint", Dim = "Dim";
+}
+
+[Submenu(CollapsedByDefault = true)]
+public sealed class StateSettings
+{
+    [Menu("Invulnerable", "Monsters that can't be damaged right now (the CannotBeDamaged stat: immune boss phases, shielded adds)")]
+    public ListNode Invulnerable { get; set; } = new()
+        { Values = new() { StateModes.Off, StateModes.GreyHatch, StateModes.Hide }, Value = StateModes.GreyHatch };
+
+    [Menu("Invulnerable color", "The fill color while invulnerable")]
+    public ColorNode InvulnerableColor { get; set; } = Color.FromArgb(255, 150, 150, 160);
+
+    [Menu("Cullable", "Culling strike kills at a life % by rarity (PoE2: normal 35, magic 20, rare 10, unique 5, from poe2db). " +
+                      "Notch: a mark at the threshold. Tint: the fill changes color once under it. Hide: no bar under it")]
+    public ListNode Cullable { get; set; } = new()
+        { Values = new() { StateModes.Off, StateModes.Notch, StateModes.NotchTint, StateModes.Hide }, Value = StateModes.NotchTint };
+
+    [Menu("Cull % normal")]
+    public RangeNode<int> CullNormal { get; set; } = new(35, 0, 60);
+
+    [Menu("Cull % magic")]
+    public RangeNode<int> CullMagic { get; set; } = new(20, 0, 60);
+
+    [Menu("Cull % rare")]
+    public RangeNode<int> CullRare { get; set; } = new(10, 0, 60);
+
+    [Menu("Cull % unique")]
+    public RangeNode<int> CullUnique { get; set; } = new(5, 0, 60);
+
+    [Menu("Cull threshold multiplier", "Increased culling strike threshold from your passives or gear (1.25 = 25% increased)")]
+    public RangeNode<float> CullMultiplier { get; set; } = new(1f, 0.5f, 3f);
+
+    [Menu("Cullable color", "The life fill color once under the threshold (Notch and tint)")]
+    public ColorNode CullableColor { get; set; } = Color.FromArgb(255, 245, 235, 255);
+
+    [Menu("Hidden monsters", "Monsters the game marks hidden (not yet emerged, burrowed). Hide: no bar. Dim: a faint bar")]
+    public ListNode Hidden { get; set; } = new() { Values = new() { StateModes.Hide, StateModes.Dim }, Value = StateModes.Hide };
+}
+
+[Submenu(CollapsedByDefault = true)]
+public sealed class DotSettings
+{
+    [Menu("Show predicted loss", "A dark hatched chunk at the end of the life fill: what the damage over time running now will still " +
+                                 "take (rate x time left on the longest ailment)")]
+    public ToggleNode Enabled { get; set; } = new(true);
+
+    [Menu("Chunk color")]
+    public ColorNode Color { get; set; } = System.Drawing.Color.FromArgb(150, 0, 0, 0);
+
+    [Menu("Fallback seconds", "Time assumed when the damage over time has no ailment with a timer")]
+    public RangeNode<float> FallbackSeconds { get; set; } = new(3f, 0.5f, 10f);
+}
+
+[Submenu(CollapsedByDefault = true)]
+public sealed class DebugSettings
+{
+    [Menu("Why overlay", "Over every monster near you: why its bar is or isn't drawn (valid, alive, targetable, distance, kind, " +
+                         "state, override, ignored), with a [+ ignore] button that adds its path to the ignore list")]
+    public ToggleNode WhyOverlay { get; set; } = new(false);
+
+    [Menu("Why overlay range", "Grid units")]
+    public RangeNode<int> WhyRange { get; set; } = new(90, 20, 300);
 }
 
 [Submenu(CollapsedByDefault = true)]
@@ -202,7 +368,16 @@ public sealed class KindSettings
     [Menu("Show percent", "Life + ES + ward together, as a % of their sum")]
     public ToggleNode ShowPercent { get; set; } = new(false);
 
-    public static KindSettings Make(bool show, int width, int height, Color life, int segments, bool percent) => new()
+    [Menu("Text above", "Template: {name} {hp} {hp%} {life} {life%} {es} {es%} {ward} {dist} {rarity} {dps} {ttk} {dotloss}; empty: none")]
+    public TextNode TextAbove { get; set; } = new("");
+
+    [Menu("Text on bar", "Same tokens, centered on the bar")]
+    public TextNode TextOn { get; set; } = new("");
+
+    [Menu("Text below", "Same tokens, under the bar")]
+    public TextNode TextBelow { get; set; } = new("");
+
+    public static KindSettings Make(bool show, int width, int height, Color life, int segments, bool percent, string above = "") => new()
     {
         Show = new ToggleNode(show),
         Width = new RangeNode<int>(width, 20, 300),
@@ -210,6 +385,7 @@ public sealed class KindSettings
         LifeColor = life,
         Segments = new RangeNode<int>(segments, 0, 20),
         ShowPercent = new ToggleNode(percent),
+        TextAbove = new TextNode(above),
     };
 }
 
