@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Numerics;
 using System.Text.RegularExpressions;
 using ExileCore2.Shared.Nodes;
@@ -10,197 +9,130 @@ using ImGuiNET;
 namespace WhatsAHealthBar;
 
 /// <summary>
-/// The plugin's settings panel (DrawSettings): tabs General / Bars / Text / Status icons / States / Overrides / Ignore /
-/// Debug over the [Menu] nodes (drawn here, read by reflection elsewhere) and the three lists the nodes can't hold.
-/// Every bar kind has a live sample drawn by the engine itself (the same batched renderer, into the panel's draw list),
-/// so what you tune is what you get. Layout and controls after syrairc's ExileNameplates settings (tabs, sub-tabs per
-/// kind, the icon grid picker, "copy to all kinds, keep colors"); the list edits recompile the rules on the next Tick and
-/// stay in step with the bridge (GetLayers / SetLayers).
-/// Per-frame work stays allocation free: labels come from the attributes, live numbers and sample texts are formatted at
-/// 4 Hz, search results only when the query changes.
+/// The plugin's settings panel (DrawSettings): the [Menu]-driven SettingsMenu renderer (SettingsMenu.cs, the scaffolding's
+/// template) draws every node as a row and the three lists with its list editor (add, remove, reorder, fold, reset); this
+/// class wires in what the renderer can't know about. The live status strip, one live sample bar per kind drawn by the
+/// engine itself into the panel (the same batched renderer, so what you tune is what you get), "copy to all kinds, keep
+/// colors", the template editor with token chips and the string the sample shows, the buff search that adds statuses, the
+/// icon grid picker, the regex validity dot, the immune sample and the live Debug numbers. Layout ideas after syrairc's
+/// ExileNameplates settings (ported, not linked). The list edits recompile the rules once the mouse lets go and stay in
+/// step with the bridge (GetLayers / SetLayers).
+/// Per-frame work stays allocation free: live numbers and sample texts are formatted at 4 Hz, search results only when the
+/// query changes.
 /// </summary>
-public static class SettingsPanel
+internal sealed class SettingsPanel
 {
-    private static readonly string[] Tabs = { "General", "Bars", "Text", "Status icons", "States", "Overrides", "Ignore", "Debug" };
-    /// <summary>Tab labels per BarKind, in enum order (the enum's own names are what the preview's focus takes).</summary>
+    /// <summary>Labels per BarKind, in enum order (the enum's own names are what the preview's focus takes).</summary>
     private static readonly string[] KindTabs = { "Unique", "Rare", "Magic", "Normal", "Minions", "Players", "You" };
     private static readonly string[] PreviewFocus = Enum.GetNames<BarKind>();
-    private static readonly string[] DebuffBuff = { "Debuff", "Buff" };
-    private static readonly string[] MatchKinds = { "Path", "Name" };
     private static readonly string[] TokenChips = BuildTokenChips();
+    private static readonly Vector4 Accent = Ui.V(Ui.Accent), Ok = Ui.V(Ui.Ok), Danger = Ui.V(Ui.Danger), Muted = Ui.V(Ui.Muted);
+    private const string SampleTip = "Live sample, drawn by the engine with these settings: fake hits and heals, the name and data texts, status icons, a damage-over-time chunk on uniques and rares";
 
-    private static int _kind, _textKind, _openStatus = -1, _openOverride = -1;
-    /// <summary>Room a list card keeps on its right for the kind badge, the two arrows and the remove button (measured each frame, for the font in use).</summary>
-    private static float TrailingW;
-    private static string _search = "", _ignoreInput = "", _iconFilter = "";
-    private static string? _searchDone;
-    private static double _searchRetryAt;
-    private static readonly List<BuffDefDto> _searchHits = new();
-    private static int _searchTotal;
-    private static readonly Dictionary<string, string?> RegexErrors = new();
-    private static readonly SampleBars Samples = new();
-    private static readonly LiveText Live = new();
+    private readonly WhatsAHealthBar _plugin;
+    private readonly SettingsMenu _menu;
+    private readonly SampleBars _samples = new();
+    private readonly LiveText _live = new();
     /// <summary>The panel's own batch renderer for the sample bars (the plugin's draws the overlay and keeps its counters).</summary>
-    private static readonly BarRenderer Renderer = new();
+    private readonly BarRenderer _renderer = new();
+    private readonly Dictionary<string, string?> _regexErrors = new();
+    private readonly List<BuffDefDto> _searchHits = new();
+    private int _textKind, _lastSampleKind, _searchTotal, _seenEdits;
+    private string _search = "", _searchRaw = "", _searchTrim = "", _iconFilter = "";
+    private string? _searchDone;
+    private double _searchRetryAt;
 
-    public static void Draw(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    /// <summary>An edit not compiled yet (a widget was still active) and when the panel last drew: Tick compiles it when the menu closed on it.</summary>
+    public bool Pending;
+    public double DrawnAt = double.NegativeInfinity;
+
+    public SettingsPanel(WhatsAHealthBar plugin)
     {
-        Ui.Index(s);
+        _plugin = plugin;
+        _menu = new SettingsMenu { Accent = Accent, RootTabName = "General" }
+            .Banner(DrawBanner)
+            .Custom("Preview", DrawPreviewRow)
+            .Tab("Text", DrawTemplates)
+            .Tab("States", DrawStateSamples)
+            .Tab("Debug", DrawDebug)
+            .ListExtras("Statuses", above: DrawBuffSearch, below: DrawRestoreDefaults)
+            .ItemLead("Statuses", DrawStatusLead)
+            .CustomField("Statuses.Icon", DrawIconField)
+            .ItemLead("Overrides", DrawRegexDot)
+            .CustomField("Overrides.Pattern", DrawPatternField);
+        // the settings property names are the BarKind names: Unique, Rare, Magic, Normal, Minion, Player, Self
+        for (var k = 0; k < PreviewFocus.Length; k++)
+        {
+            var kind = (BarKind)k;
+            _menu.Custom(PreviewFocus[k] + ".Sample", () => DrawSample(kind));
+            _menu.Custom(PreviewFocus[k] + ".CopyToAll", () => DrawCopyToAll(kind));
+        }
+    }
+
+    public void Draw(WhatsAHealthBarSettings s)
+    {
         // The HUD skips a disabled plugin's Tick and Render, so the panel runs on ImGui's clock and has a renderer of its
         // own (same rules and atlas, prepared from the same settings): the samples animate and edits show whether the
         // plugin is on or off, and the overlay's counters and caches are never touched.
-        Renderer.Rules = plugin.Rules;
-        Renderer.AtlasId = plugin.Renderer.AtlasId;
-        Renderer.SubPixel = false;
-        Renderer.Prepare(s, plugin.ResolutionScale);
-        Ui.PushStyle();
-        var style = ImGui.GetStyle();
-        TrailingW = ImGui.CalcTextSize("debuff").X + 10 + 2 * ImGui.GetFrameHeight() + ImGui.CalcTextSize("x").X + 2 * style.FramePadding.X + 4 * style.ItemSpacing.X + 8;
-        Header(plugin, s);
-        var changed = false;
-        if (ImGui.BeginTabBar("##whaTabs", ImGuiTabBarFlags.NoCloseWithMiddleMouseButton))
-        {
-            for (var i = 0; i < Tabs.Length; i++)
-            {
-                if (!ImGui.BeginTabItem(Tabs[i])) continue;
-                ImGui.Dummy(new Vector2(0, 2));
-                ImGui.BeginChild("##whaBody", new Vector2(0, 0), ImGuiChildFlags.None, ImGuiWindowFlags.None);
-                lock (plugin.LayersLock)
-                {
-                    switch (i)
-                    {
-                        case 0: General(s); break;
-                        case 1: Bars(plugin, s); break;
-                        case 2: Text(plugin, s); break;
-                        case 3: changed |= Icons(plugin, s); break;
-                        case 4: States(plugin, s); break;
-                        case 5: changed |= Overrides(plugin, s); break;
-                        case 6: changed |= Ignored(s); break;
-                        case 7: Debug(plugin, s); break;
-                    }
-                }
-                ImGui.EndChild();
-                ImGui.EndTabItem();
-            }
-            ImGui.EndTabBar();
-        }
-        Ui.PopStyle();
+        _renderer.Rules = _plugin.Rules;
+        _renderer.AtlasId = _plugin.Renderer.AtlasId;
+        _renderer.SubPixel = false;
+        _renderer.Prepare(s, _plugin.ResolutionScale);
+        _live.Refresh(_plugin);
+        lock (_plugin.LayersLock) _menu.Draw(s);
         // Compiled here (not on the next Tick): the samples, the problems badge and the bridge must see the edit even
         // while the plugin is disabled and gets no Tick; but once the mouse lets go, not on every frame of a slider or
         // color drag (a compile renumbers the rules and makes every bar re-read its stats). The samples re-resolve their
         // statuses against the new rules on the next frame.
-        Pending |= changed;
+        if (_menu.ListEdits != _seenEdits) { _seenEdits = _menu.ListEdits; Pending = true; }
         DrawnAt = ImGui.GetTime();
-        if (Pending && !ImGui.IsAnyItemActive()) { Pending = false; plugin.CompileLayers(); Samples.Invalidate(); }
+        if (Pending && !ImGui.IsAnyItemActive()) { Pending = false; _plugin.CompileLayers(); _samples.Invalidate(); }
     }
 
-    /// <summary>An edit not compiled yet (a widget was still active) and when the panel last drew: Tick compiles it when the menu closed on it.</summary>
-    internal static bool Pending;
-    internal static double DrawnAt = double.NegativeInfinity;
+    // ---- Banner: live status; the preview button is the Preview row on General ----
 
-    // ---- Header: name, enable, live status, preview ----
-
-    private static void Header(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawBanner()
     {
-        Ui.Toggle(s.Enable, "Whats A Health Bar");
-        ImGui.SameLine(0, 14);
-        Live.Refresh(plugin);
-        var sup = s.Enable ? plugin.Suppressed : "disabled";
-        if (sup == null) Ui.Badge(Live.DrawnBadge, Ui.Ok);
-        else Ui.Badge(sup, Ui.Muted, outline: true);
-        Ui.Tip(sup == null ? "Bars drawn last frame" : "Why no bars are drawn right now");
-        var problems = plugin.Rules.Problems.Count;
-        if (problems > 0)
+        var s = _plugin.Settings;
+        var sup = s.Enable ? _plugin.Suppressed : "disabled";
+        if (sup == null) _menu.Badge(_live.DrawnBadge, Ok, "Bars drawn last frame");
+        else _menu.Badge(sup, Muted, "Why no bars are drawn right now");
+        if (_plugin.Rules.Problems.Count > 0)
         {
             ImGui.SameLine();
-            Ui.Badge(Live.ProblemsBadge, Ui.Danger);
-            Ui.Tip("Something in the lists didn't compile: see the Debug tab");
+            _menu.Badge(_live.ProblemsBadge, Danger, "Something in the lists didn't compile: see the Debug tab");
         }
-        ImGui.SameLine(ImGui.GetContentRegionMax().X - 150);
+        ImGui.Spacing();
+    }
+
+    private void DrawPreviewRow()
+    {
+        SettingsMenu.Label("Preview in game", "Sample bars mid-screen for 8 seconds with fake hits, heals, names, icons and an immune sample; the kind whose sample you looked at last comes first. Also from the control center");
+        ImGui.SameLine(_menu.ControlColumn);
         // Only while enabled: the request is drained by Tick, which a disabled plugin doesn't get (it would fire later).
-        ImGui.BeginDisabled(!s.Enable);
-        if (Ui.AccentButton("Preview in game", "Sample bars mid-screen for 8 seconds with fake hits, heals, names, icons and an immune sample, the kind whose tab is open first. Also from the control center", 150))
-            plugin.RequestPreview(8, PreviewFocus[Math.Clamp(_kind, 0, 6)]);
+        var on = _plugin.Settings.Enable.Value;
+        ImGui.BeginDisabled(!on);
+        if (_menu.AccentButton("Preview in game##pv")) _plugin.RequestPreview(8, PreviewFocus[Math.Clamp(_lastSampleKind, 0, PreviewFocus.Length - 1)]);
         ImGui.EndDisabled();
-        ImGui.Dummy(new Vector2(0, 2));
+        if (!on && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) SettingsMenu.Tooltip("Enable the plugin first: a disabled plugin gets no Tick to run the preview on");
     }
 
-    // ---- General ----
+    // ---- Bars: the live sample at the top of each kind's card, the copy button at its bottom ----
 
-    private static void General(WhatsAHealthBarSettings s)
+    private void DrawSample(BarKind kind)
     {
-        var v = s.Visibility;
-        Ui.Section("Where bars show");
-        Ui.Toggle(v.ShowInTown); Ui.Toggle(v.ShowInHideout); Ui.Toggle(v.HideWhenPanelsOpen); Ui.Toggle(v.HideUntargetable);
-        Ui.Toggle(v.HideFullNormals);
-        Ui.Slider(v.MaxDistance); Ui.Slider(v.MinionBelowPercent);
-        Ui.Section("Placement");
-        Ui.Toggle(v.AlignToGameBar); Ui.Slider(v.ZOffset);
-        Ui.Toggle(s.Motion.Interpolate); Ui.Toggle(s.Motion.SubPixel);
-        Ui.Slider(v.ClassifyHz);
-        var a = s.Animation;
-        Ui.Section("Animation");
-        Ui.Toggle(a.Enabled);
-        ImGui.BeginDisabled(!a.Enabled);
-        Ui.Toggle(a.DamageTrail); Ui.Slider(a.TrailHoldMs); Ui.Slider(a.TrailDrain, "%.1f");
-        Ui.Toggle(a.HitFlash); Ui.Toggle(a.HealGlow); Ui.Slider(a.FadeMs); Ui.Slider(a.LowLifePulse);
-        ImGui.EndDisabled();
-        Ui.Section("Bridge");
-        Ui.Segmented(s.Bridge.PublishKills);
+        _lastSampleKind = (int)kind;
+        _samples.Draw(_plugin, _renderer, kind, ImGui.GetContentRegionAvail().X, 96, SampleTip);
     }
 
-    // ---- Bars: shared look, then one sub-tab per kind with its live sample ----
-
-    private static void Bars(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawCopyToAll(BarKind kind)
     {
-        if (ImGui.BeginTabBar("##whaKinds"))
-        {
-            if (ImGui.BeginTabItem("All bars")) { Look(s); ImGui.EndTabItem(); }
-            for (var k = 0; k < KindTabs.Length; k++)
-            {
-                if (!ImGui.BeginTabItem(KindTabs[k])) continue;
-                _kind = k;
-                Kind(plugin, s, (BarKind)k);
-                ImGui.EndTabItem();
-            }
-            ImGui.EndTabBar();
-        }
-    }
-
-    private static void Look(WhatsAHealthBarSettings s)
-    {
-        var l = s.Look;
-        Ui.Note("The look every kind shares. Sizes are for 1440p and scale with the window; each kind sets its own width, height and life color in its tab.");
-        Ui.Section("Size and shape");
-        Ui.Slider(l.Scale, "%.2f"); Ui.Toggle(l.ScaleWithResolution); Ui.Slider(l.Rounding, "%.0f"); Ui.Slider(l.Outline);
-        Ui.Section("Colors");
-        Ui.Color(l.OutlineColor); Ui.Color(l.BackgroundColor); Ui.Color(l.EsColor); Ui.Color(l.WardColor);
-        Ui.Color(l.TrailColor); Ui.Color(l.HealColor); Ui.Color(l.TextColor);
-        Ui.Section("Pools");
-        Ui.Segmented(l.Pools); Ui.Segmented(l.TotalLine); Ui.Toggle(l.PoolDividers);
-        Ui.Section("Shine");
-        Ui.Slider(l.Gloss, "%.2f"); Ui.Slider(l.Shading, "%.2f");
-    }
-
-    private static void Kind(WhatsAHealthBar plugin, WhatsAHealthBarSettings s, BarKind kind)
-    {
+        var s = _plugin.Settings;
         var k = s.For(kind);
-        Samples.Draw(plugin, kind, ImGui.GetContentRegionAvail().X, 96);
-        Ui.Tip("Live sample, drawn by the engine with these settings: fake hits and heals, the name and data texts, status icons, a damage-over-time chunk on uniques and rares");
-        Ui.Toggle(k.Show);
-        ImGui.BeginDisabled(!k.Show);
-        Ui.Slider(k.Width); Ui.Slider(k.Height); Ui.Color(k.LifeColor); Ui.Slider(k.Segments); Ui.Toggle(k.ShowPercent);
-        Ui.Section("Texts");
-        Template(k.TextAbove, "Text above", Samples.Bar(plugin, kind), false);
-        Template(k.TextOn, "Text on the bar", Samples.Bar(plugin, kind), false);
-        Template(k.TextBelow, "Text below", Samples.Bar(plugin, kind), false);
-        Ui.Note("Token chips and a live sample are in the Text tab.");
-        ImGui.EndDisabled();
-        ImGui.Dummy(new Vector2(0, 4));
-        if (Ui.Button("Copy to all kinds, keep colors", "Gives every other kind this kind's width, height, segments, percent and texts; each keeps its own life color and Show"))
-            Ui.Ask("##whaCopyAll");
+        if (_menu.AccentButton("Copy to all kinds, keep colors")) Ui.Ask("##whaCopyAll");
+        if (ImGui.IsItemHovered()) SettingsMenu.Tooltip("Gives every other kind this kind's width, height, segments, percent and texts; each keeps its own life color and Show");
         if (Ui.Confirm("##whaCopyAll", "Overwrite every kind's size, segments, percent and texts with this kind's? Life colors and Show stay as they are.", "Copy to all"))
-            for (var i = 0; i < 7; i++)
+            for (var i = 0; i < PreviewFocus.Length; i++)
             {
                 var t = s.For((BarKind)i);
                 if (ReferenceEquals(t, k)) continue;
@@ -210,44 +142,44 @@ public static class SettingsPanel
             }
     }
 
-    // ---- Text: the template editor with token chips and a live sample ----
+    // ---- Text: the template editor with token chips and a live sample, under the Text card ----
 
-    private static void Text(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawTemplates()
     {
-        var t = s.Text;
-        Ui.Section("Names and data texts");
-        Ui.Slider(t.AbbreviateOver); Ui.Slider(t.Scale, "%.2f"); Ui.Toggle(t.Shadow); Ui.Slider(t.DpsWindow, "%.1f");
-        Ui.Section("Templates");
-        Ui.RowLabel("Kind", "Which kind's three text slots to edit");
-        if (Ui.SegmentedButtons(KindTabs, KindTabs[_textKind], out var picked)) _textKind = Array.IndexOf(KindTabs, picked);
+        var s = _plugin.Settings;
+        _menu.SectionHeader("Templates", "The three text slots of one kind: click a token chip to append it; the line under each shows what the sample bar reads right now");
+        SettingsMenu.Label("Kind", "Which kind's three text slots to edit");
+        ImGui.SameLine(_menu.ControlColumn);
+        _menu.Segmented("##kind", KindTabs, ref _textKind);
         var kind = (BarKind)_textKind;
         var k = s.For(kind);
-        Samples.Draw(plugin, kind, ImGui.GetContentRegionAvail().X, 96);
-        var sample = Samples.Bar(plugin, kind);
-        Template(k.TextAbove, "Text above", sample, true);
-        Template(k.TextOn, "Text on the bar", sample, true);
-        Template(k.TextBelow, "Text below", sample, true);
-        Ui.Note("Tokens: {name} {hp} {hpmax} {hp%} (life + ES + ward) {life} {lifemax} {life%} {es} {esmax} {es%} {ward} {wardmax} {ward%} {dist} {rarity} {dps} {ttk} {dotloss} {dotdps}. Anything else is literal text; an unknown token shows as written.");
+        _samples.Draw(_plugin, _renderer, kind, ImGui.GetContentRegionAvail().X, 96, SampleTip);
+        var sample = _samples.Bar(_plugin, kind);
+        Template(k.TextAbove, "Text above", sample);
+        Template(k.TextOn, "Text on the bar", sample);
+        Template(k.TextBelow, "Text below", sample);
+        ImGui.PushTextWrapPos(0f);
+        SettingsMenu.Dim("Tokens: {name} {hp} {hpmax} {hp%} (life + ES + ward) {life} {lifemax} {life%} {es} {esmax} {es%} {ward} {wardmax} {ward%} {dist} {rarity} {dps} {ttk} {dotloss} {dotdps}. Anything else is literal text; an unknown token shows as written.");
+        ImGui.PopTextWrapPos();
     }
 
     /// <summary>One text slot: the input, the token chips (click to append) and the string the sample bar shows right now.</summary>
-    private static void Template(TextNode node, string label, Bar sample, bool chips)
+    private void Template(TextNode node, string label, Bar sample)
     {
-        Ui.PushNodeId(node);
-        Ui.RowLabel(label, Ui.TipOf(node));
+        ImGui.PushID(label);
+        SettingsMenu.Label(label, "Template: tokens in braces, anything else literal; empty: nothing");
+        ImGui.SameLine(_menu.ControlColumn);
         ImGui.SetNextItemWidth(-1);
         var v = node.Value ?? "";
         if (ImGui.InputTextWithHint("##t", "empty: nothing", ref v, 200)) node.Value = v;
-        Ui.Tip(Ui.TipOf(node));
-        if (chips)
-        {
-            ImGui.Dummy(new Vector2(Ui.LabelW - 8, 0));
-            for (var i = 0; i < TokenChips.Length; i++)
-                if (Ui.Chip(TokenChips[i], "Append this token", true)) node.Value = (node.Value ?? "") + TokenChips[i];
-            ImGui.Dummy(new Vector2(Ui.LabelW - 8, 0)); ImGui.SameLine();
-            Ui.Colored(Ui.Muted, "shows:"); ImGui.SameLine();
-            Ui.Colored(Ui.Text, Live.Sample(node, sample));
-        }
+        ImGui.Dummy(new Vector2(_menu.ControlColumn - 8, 0));
+        for (var i = 0; i < TokenChips.Length; i++)
+            if (_menu.Chip(TokenChips[i], "Append this token")) node.Value = (node.Value ?? "") + TokenChips[i];
+        ImGui.Dummy(new Vector2(_menu.ControlColumn - 8, 0));
+        ImGui.SameLine();
+        SettingsMenu.Dim("shows:");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(_live.Sample(node, sample));
         ImGui.PopID();
     }
 
@@ -258,31 +190,22 @@ public static class SettingsPanel
         return a;
     }
 
-    // ---- Status icons: the block settings, the buff search, and the configured list ----
+    // ---- Status icons: the buff search above the list, the restore button below it, the icon in each line ----
 
-    private static bool Icons(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawBuffSearch()
     {
-        var ic = s.Icons;
-        var changed = false;
-        Ui.Section("Icon blocks");
-        Ui.Toggle(ic.Enabled);
-        ImGui.BeginDisabled(!ic.Enabled);
-        Ui.Segmented(ic.Kinds); Ui.Segmented(ic.DebuffAnchor); Ui.Segmented(ic.BuffAnchor);
-        Ui.Slider(ic.Size); Ui.Toggle(ic.Plate); Ui.Slider(ic.Columns); Ui.Slider(ic.MaxIcons); Ui.Toggle(ic.ShowStacks); Ui.Toggle(ic.ShowDuration);
-        ImGui.EndDisabled();
-        if (plugin.AtlasProblem is { } ap) Ui.Colored(Ui.Danger, ap);
-
-        Ui.Section("Add a status from the game's buff list");
-        ImGui.SetNextItemWidth(Ui.ControlW + 60);
-        ImGui.InputTextWithHint("##whaBuffSearch", "search buff ids and names (2+ letters)", ref _search, 64);
-        Ui.Tip("The game's own BuffDefinitions: the id is what Buff.Name reads on a monster. Add one, then pick its icon and tint below");
-        var q = _search.Trim();
+        var s = _plugin.Settings;
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint("##whaBuffSearch", "add from the game's buff list: search ids and names (2+ letters)", ref _search, 64);
+        if (ImGui.IsItemHovered()) SettingsMenu.Tooltip("The game's own BuffDefinitions: the id is what Buff.Name reads on a monster. Add one, then pick its icon and tint in its line below");
+        if (!ReferenceEquals(_search, _searchRaw)) { _searchRaw = _search; _searchTrim = _search.Trim(); }   // trimmed once per edit, not per frame
+        var q = _searchTrim;
         if (q.Length >= 2)
         {
             // Again when the text changes; an empty catalog (the read reloads the file) is tried again in game, every 2 s.
-            if (q != _searchDone || (_searchTotal < 0 && plugin.InGame && ImGui.GetTime() >= _searchRetryAt)) Search(plugin, q);
-            if (_searchHits.Count == 0) Ui.Note(_searchTotal < 0 ? "Files.BuffDefinitions is empty: enter the game, then search again" : "nothing matches");
-            ImGui.BeginChild("##whaHits", new Vector2(0, Math.Min(_searchHits.Count, 8) * (ImGui.GetFrameHeightWithSpacing()) + 4), ImGuiChildFlags.None);
+            if (q != _searchDone || (_searchTotal < 0 && _plugin.InGame && ImGui.GetTime() >= _searchRetryAt)) Search(q);
+            if (_searchHits.Count == 0) SettingsMenu.Dim(_searchTotal < 0 ? "Files.BuffDefinitions is empty: enter the game, then search again" : "nothing matches");
+            ImGui.BeginChild("##whaHits", new Vector2(0, Math.Min(_searchHits.Count, 8) * ImGui.GetFrameHeightWithSpacing() + 4), ImGuiChildFlags.None);
             for (var i = 0; i < _searchHits.Count; i++)
             {
                 var d = _searchHits[i];
@@ -290,73 +213,32 @@ public static class SettingsPanel
                 // Against the list itself: a disabled entry is listed too, and the compiled rules skip those.
                 var listed = false;
                 for (var j = 0; j < s.Statuses.Count && !listed; j++) listed = s.Statuses[j].Id == d.Id;
-                if (listed) { Ui.Badge("listed", Ui.Faint); }
+                if (listed) _menu.Badge("listed", Muted);
                 else if (ImGui.SmallButton("Add"))
                 {
                     s.Statuses.Add(new StatusRule { Id = d.Id, Label = d.Name.Length > 0 ? d.Name : d.Id });
-                    _openStatus = s.Statuses.Count - 1;
-                    changed = true;
+                    _menu.OpenItem("Statuses", s.Statuses.Count - 1);
+                    _menu.ListEdited();
                 }
                 ImGui.SameLine();
                 ImGui.AlignTextToFramePadding();
                 ImGui.TextUnformatted(d.Id);
-                if (d.Name.Length > 0) { ImGui.SameLine(); Ui.Colored(Ui.Muted, d.Name); }
-                if (d.Invisible) { ImGui.SameLine(); Ui.Colored(Ui.Faint, "invisible"); }
+                if (d.Name.Length > 0) { ImGui.SameLine(); SettingsMenu.Dim(d.Name); }
+                if (d.Invisible) { ImGui.SameLine(); SettingsMenu.Text(Ui.V(Ui.Faint), "invisible"); }
                 ImGui.PopID();
             }
             ImGui.EndChild();
-            if (_searchTotal > _searchHits.Count) Ui.Note("more: refine the search");
+            if (_searchTotal > _searchHits.Count) SettingsMenu.Dim("more: refine the search");
         }
-
-        Ui.Section("Statuses shown as icons");
-        Ui.Note("Order is draw order. Click a row to edit it; the icon on the left is drawn as it will be on the bar.");
-        var atlas = plugin.Renderer.AtlasId;
-        var L = plugin.Rules;
-        for (var i = 0; i < s.Statuses.Count; i++)
-        {
-            var r = s.Statuses[i];
-            ImGui.PushID(i);
-            var open = _openStatus == i;
-            Ui.BeginCard("##st", open);
-            var en = r.Enabled;
-            if (EnableBox(ref en, "Shown as an icon when on")) { r.Enabled = en; changed = true; }
-            // The compiled rule (icon index, parsed tints) when it compiled: the rules are rebuilt on every edit here. A
-            // disabled or duplicate status has none and is parsed on the spot.
-            int icon; uint tint, badgeTint;
-            if (L.StatusById.TryGetValue(r.Id, out var rule) && ReferenceEquals(L.Statuses[rule], r))
-            { icon = L.StatusIcons[rule]; tint = L.StatusTints[rule]; badgeTint = L.StatusBadgeTints[rule]; }
-            else
-            {
-                icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
-                tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
-                badgeTint = Colors.TryParse(r.BadgeTint, out var bt) ? bt : 0xFF30262A;
-            }
-            Ui.IconImage(atlas, icon, r.Badge, en ? tint : Ui.Alpha(tint, 0.35f), en ? badgeTint : Ui.Alpha(badgeTint, 0.35f), 20, s.Icons.Plate);
-            ImGui.SameLine();
-            var action = CardRow(r.Label.Length > 0 ? r.Label : r.Id, r.Id, r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64, open, i == 0, i == s.Statuses.Count - 1);
-            changed |= Apply(action, s.Statuses, i, ref _openStatus);
-            if (action is RowAction.Remove or RowAction.Up or RowAction.Down) { Ui.EndCard(); ImGui.PopID(); break; } // the list moved: next frame draws it
-            if (open) changed |= StatusBody(r, atlas);
-            Ui.EndCard();
-            ImGui.PopID();
-        }
-        ImGui.Dummy(new Vector2(0, 2));
-        if (Ui.Button("Restore the PoE2 defaults", "Replaces the whole list with the shipped PoE2 statuses (ailments, exposure, armour break, curses...)")) Ui.Ask("##whaDefaults");
-        if (Ui.Confirm("##whaDefaults", "Replace the status list with the PoE2 defaults? Your own entries and edits are lost.", "Restore defaults"))
-        {
-            s.Statuses = StatusDefaults.Make();
-            _openStatus = -1;
-            changed = true;
-        }
-        return changed;
+        ImGui.Spacing();
     }
 
-    private static void Search(WhatsAHealthBar plugin, string q)
+    private void Search(string q)
     {
         _searchDone = q;
         _searchHits.Clear();
         _searchTotal = 0;
-        var catalog = plugin.BuffCatalog();
+        var catalog = _plugin.BuffCatalog();
         // An empty catalog (not in game yet) isn't a result to keep: the search runs again, 2 s later, while in game.
         if (catalog.Count == 0) { _searchTotal = -1; _searchRetryAt = ImGui.GetTime() + 2; return; }
         foreach (var d in catalog)
@@ -367,50 +249,57 @@ public static class SettingsPanel
         }
     }
 
-    private static bool StatusBody(StatusRule r, IntPtr atlas)
+    private void DrawRestoreDefaults()
     {
-        var changed = false;
-        ImGui.Separator();
-        var id = r.Id;
-        if (Field("Buff id", "The game's buff definition id, exactly as Buff.Name reads it", ref id)) { r.Id = id.Trim(); changed = true; }
-        var label = r.Label;
-        if (Field("Label", "Your name for it (the panel and the bridge)", ref label)) { r.Label = label; changed = true; }
-        Ui.RowLabel("Kind", "Debuffs and buffs are separate icon blocks (their anchors are above)");
-        if (Ui.SegmentedButtons(DebuffBuff, r.Debuff ? "Debuff" : "Buff", out var db)) { r.Debuff = db == "Debuff"; changed = true; }
-        Ui.RowLabel("Icon", "One of the 96 atlas glyphs (syrairc's). Click to pick from the grid");
+        var s = _plugin.Settings;
+        ImGui.SameLine();   // next to the add button
+        if (_menu.AccentButton("Restore the PoE2 defaults")) Ui.Ask("##whaDefaults");
+        if (ImGui.IsItemHovered()) SettingsMenu.Tooltip("Replaces the whole list with the shipped PoE2 statuses (ailments, exposure, armour break, curses...)");
+        if (Ui.Confirm("##whaDefaults", "Replace the status list with the PoE2 defaults? Your own entries and edits are lost.", "Restore defaults"))
+        {
+            s.Statuses = StatusDefaults.Make();
+            _menu.OpenItem("Statuses", -1);
+            _menu.ListEdited();
+        }
+    }
+
+    /// <summary>The icon at the start of a status line, drawn as it will be on the bar (the compiled rule's tint when it compiled).</summary>
+    private void DrawStatusLead(object o)
+    {
+        var r = (StatusRule)o;
+        var L = _plugin.Rules;
+        // The compiled rule (icon index, parsed tints) when it compiled: the rules are rebuilt on every edit here. A
+        // disabled or duplicate status has none and is parsed on the spot.
+        int icon; uint tint, badgeTint;
+        if (L.StatusById.TryGetValue(r.Id, out var rule) && ReferenceEquals(L.Statuses[rule], r))
+        { icon = L.StatusIcons[rule]; tint = L.StatusTints[rule]; badgeTint = L.StatusBadgeTints[rule]; }
+        else
+        {
+            icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
+            tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
+            badgeTint = Colors.TryParse(r.BadgeTint, out var bt) ? bt : 0xFF30262A;
+        }
+        var en = r.Enabled;
+        Ui.IconImage(_plugin.Renderer.AtlasId, icon, r.Badge, en ? tint : Ui.Alpha(tint, 0.35f), en ? badgeTint : Ui.Alpha(badgeTint, 0.35f), 20, _plugin.Settings.Icons.Plate);
+    }
+
+    /// <summary>The Icon field: the current glyph as a button that opens the grid picker, its name beside it.</summary>
+    private void DrawIconField(object o)
+    {
+        var r = (StatusRule)o;
+        var atlas = _plugin.Renderer.AtlasId;
         var icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
         var tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
         if (Ui.IconCell("##pick", atlas, icon, 1, tint, 26, false)) { _iconFilter = ""; ImGui.OpenPopup("##whaIconGrid"); }
+        if (ImGui.IsItemHovered()) SettingsMenu.Tooltip("Click to pick another glyph from the grid");
         ImGui.SameLine();
         ImGui.AlignTextToFramePadding();
-        Ui.Colored(Ui.Muted, StatusAtlas.Names[icon]);
-        changed |= IconGrid(r, atlas, tint, icon);
-        Ui.RowLabel("Tint", "The icon's color (the glyph is white in the atlas, so this is the color you see)");
-        var hex = r.Tint;
-        if (Ui.HexColor("##tint", ref hex)) { r.Tint = hex; changed = true; }
-        Ui.RowLabel("Badge", "Bare: the glyph alone. Gem: baked on the dark gem badge. Over badge: the glyph over a badge of its own color");
-        if (Ui.SegmentedButtons(Badges.All, r.Badge, out var badge)) { r.Badge = badge; changed = true; }
-        if (r.Badge == Badges.OverBadge)
-        {
-            Ui.RowLabel("Badge tint", "Color of the badge under the glyph");
-            var bh = r.BadgeTint;
-            if (Ui.HexColor("##btint", ref bh)) { r.BadgeTint = bh; changed = true; }
-        }
-        Ui.RowLabel("Scale", "Multiplies the icon size for this status alone (a big curse, a small chill)");
-        var scale = r.Scale;
-        if (ImGui.SliderFloat("##scale", ref scale, 0.5f, 3f, "%.2f")) { r.Scale = scale; changed = true; }
-        if (ImGui.TreeNodeEx("Bar while present", ImGuiTreeNodeFlags.SpanAvailWidth))
-        {
-            Ui.Note("Changes the whole bar while the monster has this status (an orange outline while cursed, hide while shielded...). Ticked fields apply; the rest stay as the kind draws them.");
-            r.Patch ??= new StylePatch();
-            changed |= Patch(r.Patch);
-            ImGui.TreePop();
-        }
-        return changed;
+        SettingsMenu.Dim(StatusAtlas.Names[icon]);
+        if (IconGrid(r, atlas, tint, icon)) _menu.ListEdited();
     }
 
     /// <summary>The icon grid popup: search by glyph name, the 96 bare glyphs in the current tint, the picked one ringed.</summary>
-    private static bool IconGrid(StatusRule r, IntPtr atlas, uint tint, int current)
+    private bool IconGrid(StatusRule r, IntPtr atlas, uint tint, int current)
     {
         if (!ImGui.BeginPopup("##whaIconGrid")) return false;
         var changed = false;
@@ -418,7 +307,7 @@ public static class SettingsPanel
         ImGui.SetNextItemWidth(240);
         ImGui.InputTextWithHint("##f", "search glyphs", ref _iconFilter, 32);
         ImGui.SameLine();
-        Ui.Colored(Ui.Muted, "click to pick, Esc to close");
+        SettingsMenu.Dim("click to pick, Esc to close");
         const int cols = 12;
         const float cell = 34;
         // A cell button is the image plus the frame padding on both sides, then the 2 px spacing pushed below.
@@ -434,285 +323,76 @@ public static class SettingsPanel
             ImGui.PushID(i);
             if (Ui.IconCell("##c", atlas, i, 1, tint, cell, i == current)) { r.Icon = name; changed = true; ImGui.CloseCurrentPopup(); }
             ImGui.PopID();
-            Ui.Tip(name);
+            if (ImGui.IsItemHovered()) SettingsMenu.Tooltip(name);
         }
         ImGui.PopStyleVar();
-        if (shown == 0) Ui.Note("no glyph matches");
+        if (shown == 0) SettingsMenu.Dim("no glyph matches");
         ImGui.EndChild();
         ImGui.EndPopup();
         return changed;
     }
 
-    // ---- States ----
+    // ---- Overrides: the validity dot at the start of each line, the pattern field with its error ----
 
-    private static void States(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawRegexDot(object o)
     {
-        var st = s.States;
-        Ui.Section("Invulnerable");
-        Ui.Note("A monster that can't be damaged right now (the CannotBeDamaged stat: a boss's immune phase, a shielded add). Its bar goes grey with light stripes; the sample at the bottom shows it.");
-        Ui.Segmented(st.Invulnerable);
-        ImGui.BeginDisabled(st.Invulnerable.Value != StateModes.GreyHatch);
-        Ui.Color(st.InvulnerableColor);
-        ImGui.EndDisabled();
-        Ui.Section("Cullable");
-        Ui.Note("Culling strike kills at a life % by rarity. A bright notch marks the threshold; under it the fill and outline take the cull color.");
-        Ui.Segmented(st.Cullable);
-        ImGui.BeginDisabled(st.Cullable.Value == StateModes.Off);
-        Ui.Slider(st.CullNormal); Ui.Slider(st.CullMagic); Ui.Slider(st.CullRare); Ui.Slider(st.CullUnique);
-        Ui.Slider(st.CullMultiplier, "%.2f");
-        ImGui.BeginDisabled(st.Cullable.Value != StateModes.NotchTint);
-        Ui.Color(st.CullableColor);
-        ImGui.EndDisabled();
-        ImGui.EndDisabled();
-        Ui.Section("Hidden monsters");
-        Ui.Segmented(st.Hidden);
-        Ui.Section("Damage over time");
-        var d = s.Dot;
-        Ui.Toggle(d.Enabled);
-        ImGui.BeginDisabled(!d.Enabled);
-        Ui.Color(d.Color); Ui.Slider(d.FallbackSeconds, "%.1f");
-        ImGui.EndDisabled();
-        Ui.Section("Samples");
-        Samples.Draw(plugin, BarKind.Unique, ImGui.GetContentRegionAvail().X, 96);
-        Ui.Tip("A unique with statuses and a running damage over time");
-        Samples.DrawImmune(plugin, ImGui.GetContentRegionAvail().X, 80);
-        Ui.Tip("The same unique in an immune phase");
+        var ov = (OverrideRule)o;
+        var err = RegexError(ov.Pattern);
+        var dl = ImGui.GetWindowDrawList();
+        var dot = ImGui.GetCursorScreenPos() + new Vector2(5, ImGui.GetFrameHeight() * 0.5f);
+        dl.AddCircleFilled(dot, 4, ov.Pattern.Length == 0 ? Ui.Faint : err == null ? Ui.Ok : Ui.Danger, 12);
+        ImGui.Dummy(new Vector2(12, ImGui.GetFrameHeight()));
+        if (ImGui.IsItemHovered()) SettingsMenu.Tooltip(ov.Pattern.Length == 0 ? "No pattern yet: matches nothing" : err ?? "Valid regex");
     }
 
-    // ---- Overrides ----
-
-    private static bool Overrides(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawPatternField(object o)
     {
-        var changed = false;
-        Ui.Note("A look for specific monsters: a regex on the metadata path (\"Monsters/.*Boss\") or the display name. The first enabled match wins, so order matters. The why overlay (Debug) shows each monster's path.");
-        for (var i = 0; i < s.Overrides.Count; i++)
-        {
-            var o = s.Overrides[i];
-            ImGui.PushID(i);
-            var open = _openOverride == i;
-            Ui.BeginCard("##ov", open);
-            var en = o.Enabled;
-            if (EnableBox(ref en, "Matched when on")) { o.Enabled = en; changed = true; }
-            var err = RegexError(o.Pattern);
-            var dl = ImGui.GetWindowDrawList();
-            var dot = ImGui.GetCursorScreenPos() + new Vector2(5, ImGui.GetFrameHeight() * 0.5f);
-            dl.AddCircleFilled(dot, 4, o.Pattern.Length == 0 ? Ui.Faint : err == null ? Ui.Ok : Ui.Danger, 12);
-            ImGui.Dummy(new Vector2(12, ImGui.GetFrameHeight()));
-            Ui.Tip(o.Pattern.Length == 0 ? "No pattern yet: matches nothing" : err ?? "Valid regex");
-            ImGui.SameLine();
-            var action = CardRow(o.Name.Length > 0 ? o.Name : "(unnamed)", o.Pattern.Length > 0 ? o.Pattern : "Click to edit", o.Match == "Name" ? "name" : "path", Ui.Faint, open, i == 0, i == s.Overrides.Count - 1);
-            changed |= Apply(action, s.Overrides, i, ref _openOverride);
-            if (action is RowAction.Remove or RowAction.Up or RowAction.Down) { Ui.EndCard(); ImGui.PopID(); break; } // the list moved: next frame draws it
-            if (open)
-            {
-                ImGui.Separator();
-                var name = o.Name;
-                if (Field("Name", "Your name for it", ref name)) { o.Name = name; changed = true; }
-                Ui.RowLabel("Match", "Path: the metadata path (stable across languages and patches). Name: the display name (can be empty in PoE2)");
-                if (Ui.SegmentedButtons(MatchKinds, o.Match, out var m)) { o.Match = m; changed = true; }
-                var pattern = o.Pattern;
-                if (Field("Pattern", "A .NET regex, case-insensitive, e.g. Monsters/Rhoas/ or ^Xesht", ref pattern)) { o.Pattern = pattern; changed = true; }
-                if (err != null) Ui.Colored(Ui.Danger, err);
-                o.Patch ??= new StylePatch();
-                Ui.Section("Look while matched");
-                changed |= Patch(o.Patch);
-            }
-            Ui.EndCard();
-            ImGui.PopID();
-        }
-        if (Ui.AccentButton("Add override", "A new, empty override at the end of the list"))
-        {
-            s.Overrides.Add(new OverrideRule());
-            _openOverride = s.Overrides.Count - 1;
-            changed = true;
-        }
-        return changed;
+        var ov = (OverrideRule)o;
+        var v = ov.Pattern;
+        if (ImGui.InputText("##pat", ref v, 256)) { ov.Pattern = v; _menu.ListEdited(); }
+        var err = RegexError(ov.Pattern);
+        if (err != null) SettingsMenu.Text(Danger, err);
     }
 
     /// <summary>"Invalid regex: why" for a pattern that doesn't compile, null for one that does (cached per pattern text).</summary>
-    private static string? RegexError(string pattern)
+    private string? RegexError(string pattern)
     {
         if (string.IsNullOrEmpty(pattern)) return null;
-        if (RegexErrors.TryGetValue(pattern, out var err)) return err;
+        if (_regexErrors.TryGetValue(pattern, out var err)) return err;
         try { _ = new Regex(pattern); err = null; }
         catch (ArgumentException ex) { err = "Invalid regex: " + ex.Message; }
-        if (RegexErrors.Count > 200) RegexErrors.Clear();
-        return RegexErrors[pattern] = err;
+        if (_regexErrors.Count > 200) _regexErrors.Clear();
+        return _regexErrors[pattern] = err;
     }
 
-    // ---- Ignore ----
+    // ---- States: the samples under the cards ----
 
-    private static bool Ignored(WhatsAHealthBarSettings s)
+    private void DrawStateSamples()
     {
-        var changed = false;
-        Ui.Note("Metadata paths (without @level) that never get a bar. The why overlay (Debug tab) adds one with a click on the monster.");
-        Ui.Section("Ignored paths");
-        if (s.IgnoredPaths.Count == 0) Ui.Colored(Ui.Faint, "none");
-        for (var i = 0; i < s.IgnoredPaths.Count; i++)
-        {
-            ImGui.PushID(i);
-            if (Ui.Chip(s.IgnoredPaths[i], "Click to stop ignoring it", i > 0)) { s.IgnoredPaths.RemoveAt(i); changed = true; ImGui.PopID(); break; }
-            ImGui.PopID();
-        }
-        ImGui.Dummy(new Vector2(0, 2));
-        ImGui.SetNextItemWidth(Ui.ControlW + 160);
-        var enter = ImGui.InputTextWithHint("##whaIgnoreAdd", "Metadata/Monsters/...", ref _ignoreInput, 256, ImGuiInputTextFlags.EnterReturnsTrue);
-        ImGui.SameLine();
-        if ((Ui.Button("Ignore", "Adds the path to the list") || enter) && _ignoreInput.Trim().Length > 0)
-        {
-            var key = CompiledLayers.PathKey(_ignoreInput.Trim());
-            if (!s.IgnoredPaths.Contains(key, StringComparer.OrdinalIgnoreCase)) s.IgnoredPaths.Add(key);
-            _ignoreInput = "";
-            changed = true;
-        }
-        return changed;
+        _menu.SectionHeader("Samples");
+        _samples.Draw(_plugin, _renderer, BarKind.Unique, ImGui.GetContentRegionAvail().X, 96, "A unique with statuses and a running damage over time");
+        _samples.DrawImmune(_plugin, _renderer, ImGui.GetContentRegionAvail().X, 80, "The same unique in an immune phase");
     }
 
-    // ---- Debug ----
+    // ---- Debug: the live numbers under the Debug card ----
 
-    private static void Debug(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
+    private void DrawDebug()
     {
-        Ui.Section("Why overlay");
-        Ui.Toggle(s.Debug.WhyOverlay); Ui.Slider(s.Debug.WhyRange);
-        Ui.Section("Live");
-        Live.Refresh(plugin);
-        ImGui.PushStyleColor(ImGuiCol.Text, Ui.Muted);
-        for (var i = 0; i < Live.Lines.Length; i++)
+        _menu.SectionHeader("Live");
+        for (var i = 0; i < _live.Lines.Length; i++)
         {
-            ImGui.TextUnformatted(Live.Labels[i]);
-            ImGui.SameLine(Ui.LabelW);
-            ImGui.PushStyleColor(ImGuiCol.Text, Ui.Text);
-            ImGui.TextUnformatted(Live.Lines[i] ?? "");
-            ImGui.PopStyleColor();
+            SettingsMenu.Dim(_live.Labels[i]);
+            ImGui.SameLine(Math.Max(_menu.ControlColumn, 200f));
+            ImGui.TextUnformatted(_live.Lines[i] ?? "");
         }
-        ImGui.PopStyleColor();
-        if (plugin.AtlasProblem is { } ap) Ui.Colored(Ui.Danger, ap);
-        if (Live.PoolProblem is { } pp) Ui.Colored(Ui.Danger, pp);
-        var problems = plugin.Rules.Problems;
+        if (_plugin.AtlasProblem is { } ap) SettingsMenu.Text(Danger, ap);
+        if (_live.PoolProblem is { } pp) SettingsMenu.Text(Danger, pp);
+        var problems = _plugin.Rules.Problems;
         if (problems.Count > 0)
         {
-            Ui.Section("Didn't compile");
-            foreach (var p in problems) Ui.Colored(Ui.Danger, p);
+            _menu.SectionHeader("Didn't compile");
+            foreach (var p in problems) SettingsMenu.Text(Danger, p);
         }
-    }
-
-    // ---- Shared pieces ----
-
-    private enum RowAction { None, Toggle, Up, Down, Remove }
-
-    /// <summary>The enable checkbox that starts a list card's header row.</summary>
-    private static bool EnableBox(ref bool enabled, string tip)
-    {
-        var changed = ImGui.Checkbox("##en", ref enabled);
-        Ui.Tip(tip);
-        ImGui.SameLine();
-        return changed;
-    }
-
-    /// <summary>
-    /// The rest of a list card's header row: the title (click opens or closes the card), a kind badge, up, down and
-    /// remove, with <see cref="TrailingW"/> kept on the right so nothing clips. The caller applies the action.
-    /// </summary>
-    private static RowAction CardRow(string title, string? titleTip, string badge, uint badgeColor, bool open, bool first, bool last)
-    {
-        var action = RowAction.None;
-        // The selectable's id is fixed and the title is drawn over it: the user's text never becomes an ImGui id (a status
-        // labelled "Buff" must not share the segmented button's), and no string is built per frame.
-        var at = ImGui.GetCursorScreenPos();
-        if (ImGui.Selectable("##row", open, ImGuiSelectableFlags.None, new Vector2(MathF.Max(40, ImGui.GetContentRegionAvail().X - TrailingW), 0))) action = RowAction.Toggle;
-        ImGui.GetWindowDrawList().AddText(at + new Vector2(ImGui.GetStyle().FramePadding.X, 0), Ui.Text, title);
-        Ui.Tip(titleTip);
-        ImGui.SameLine(ImGui.GetContentRegionMax().X - TrailingW);
-        Ui.Badge(badge, badgeColor);
-        ImGui.SameLine();
-        if (ImGui.ArrowButton("##up", ImGuiDir.Up) && !first) action = RowAction.Up;
-        Ui.Tip("Move up (earlier in the order)");
-        ImGui.SameLine();
-        if (ImGui.ArrowButton("##dn", ImGuiDir.Down) && !last) action = RowAction.Down;
-        Ui.Tip("Move down");
-        ImGui.SameLine();
-        if (ImGui.SmallButton("x")) action = RowAction.Remove;
-        Ui.Tip("Remove it");
-        return action;
-    }
-
-    /// <summary>Applies a header action to the list and the open card's index. True when the list changed; after Remove the caller stops iterating.</summary>
-    private static bool Apply<T>(RowAction action, List<T> list, int i, ref int open)
-    {
-        switch (action)
-        {
-            case RowAction.Toggle: open = open == i ? -1 : i; return false;
-            case RowAction.Up: (list[i - 1], list[i]) = (list[i], list[i - 1]); if (open == i) open = i - 1; else if (open == i - 1) open = i; return true;
-            case RowAction.Down: (list[i + 1], list[i]) = (list[i], list[i + 1]); if (open == i) open = i + 1; else if (open == i + 1) open = i; return true;
-            case RowAction.Remove: list.RemoveAt(i); open = open == i ? -1 : open > i ? open - 1 : open; return true;
-            default: return false;
-        }
-    }
-
-    /// <summary>A text field row; by ref rather than a setter lambda, so nothing is allocated per frame.</summary>
-    private static bool Field(string label, string tip, ref string value)
-    {
-        Ui.RowLabel(label, tip);
-        ImGui.PushID(label);
-        ImGui.SetNextItemWidth(Ui.ControlW + 100);
-        var v = value ?? "";
-        var changed = ImGui.InputText("##f", ref v, 256);
-        ImGui.PopID();
-        Ui.Tip(tip);
-        if (changed) value = v;
-        return changed;
-    }
-
-    /// <summary>The optional fields of a patch: a checkbox sets each one; unset fields leave the kind's look alone.</summary>
-    private static bool Patch(StylePatch p)
-    {
-        var changed = false;
-        var hide = p.Hide; if (OptBool("Hide the bar", "No bar at all while this applies", ref hide)) { p.Hide = hide; changed = true; }
-        var c = p.LifeColor; if (OptColor("Life color", ref c)) { p.LifeColor = c; changed = true; }
-        c = p.EsColor; if (OptColor("ES color", ref c)) { p.EsColor = c; changed = true; }
-        c = p.WardColor; if (OptColor("Ward color", ref c)) { p.WardColor = c; changed = true; }
-        c = p.BackgroundColor; if (OptColor("Background", ref c)) { p.BackgroundColor = c; changed = true; }
-        c = p.OutlineColor; if (OptColor("Outline", ref c)) { p.OutlineColor = c; changed = true; }
-        c = p.TextColor; if (OptColor("Text color", ref c)) { p.TextColor = c; changed = true; }
-        var hasOp = p.Opacity.HasValue;
-        if (ImGui.Checkbox("Opacity##o", ref hasOp)) { p.Opacity = hasOp ? 1f : null; changed = true; }
-        Ui.Tip("Multiplies the whole bar's opacity");
-        if (p.Opacity.HasValue)
-        {
-            ImGui.SameLine(Ui.LabelW);
-            var op = p.Opacity.Value;
-            ImGui.SetNextItemWidth(Ui.ControlW);
-            if (ImGui.SliderFloat("##opv", ref op, 0f, 1f, "%.2f")) { p.Opacity = op; changed = true; }
-        }
-        var grey = p.Grey; if (OptBool("Grey", "Desaturates and darkens the fills", ref grey)) { p.Grey = grey; changed = true; }
-        var hatch = p.Hatch; if (OptBool("Hatch", "Light diagonal stripes across the bar (the invulnerable look)", ref hatch)) { p.Hatch = hatch; changed = true; }
-        return changed;
-    }
-
-    private static bool OptBool(string label, string tip, ref bool? value)
-    {
-        var on = value == true;
-        var changed = ImGui.Checkbox(label, ref on);
-        Ui.Tip(tip);
-        if (changed) value = on ? true : null;
-        return changed;
-    }
-
-    private static bool OptColor(string label, ref string? value)
-    {
-        var has = value != null;
-        var changed = false;
-        ImGui.PushID(label);
-        if (ImGui.Checkbox(label, ref has)) { value = has ? "#FFFFFFFF" : null; changed = true; }
-        Ui.Tip("Tick to set this color while the rule applies");
-        if (value != null)
-        {
-            ImGui.SameLine(Ui.LabelW);
-            var hex = value;
-            if (Ui.HexColor("##c", ref hex)) { value = hex; changed = true; }
-        }
-        ImGui.PopID();
-        return changed;
     }
 
     /// <summary>
@@ -801,11 +481,11 @@ public static class SettingsPanel
             return _sims[slot] = sim;
         }
 
-        public void Draw(WhatsAHealthBar plugin, BarKind kind, float width, float height) => Draw(plugin, (int)kind, kind, width, height);
+        public void Draw(WhatsAHealthBar plugin, BarRenderer renderer, BarKind kind, float width, float height, string tip) => Draw(plugin, renderer, (int)kind, kind, width, height, tip);
 
-        public void DrawImmune(WhatsAHealthBar plugin, float width, float height) => Draw(plugin, 7, BarKind.Unique, width, height);
+        public void DrawImmune(WhatsAHealthBar plugin, BarRenderer renderer, float width, float height, string tip) => Draw(plugin, renderer, 7, BarKind.Unique, width, height, tip);
 
-        private void Draw(WhatsAHealthBar plugin, int slot, BarKind kind, float width, float height)
+        private void Draw(WhatsAHealthBar plugin, BarRenderer renderer, int slot, BarKind kind, float width, float height, string tip)
         {
             var sim = Sim(plugin, slot, kind);
             var b = sim.Bar;
@@ -817,7 +497,7 @@ public static class SettingsPanel
                 var dt = _stepped[slot] > 0 ? (float)Math.Clamp(now - _stepped[slot], 0, 0.1) : 0f;
                 _stepped[slot] = now;
                 sim.Step(now, dt, plugin.Rng);
-                if (now - _looked[slot] >= 0.1) { _looked[slot] = now; plugin.PreviewLook(b, now, Renderer); }
+                if (now - _looked[slot] >= 0.1) { _looked[slot] = now; plugin.PreviewLook(b, now, renderer); }
                 b.UpdateDps(now, plugin.Settings.Text.DpsWindow.Value);
                 WhatsAHealthBar.DotLoss(b, now);
                 b.Animate(now, dt, plugin.AnimNow());
@@ -826,6 +506,7 @@ public static class SettingsPanel
             // icons above, texts and the total line below).
             var org = ImGui.GetCursorScreenPos();
             ImGui.Dummy(new Vector2(width, height));
+            if (ImGui.IsItemHovered()) SettingsMenu.Tooltip(tip);
             var dl = ImGui.GetWindowDrawList();
             dl.AddRectFilled(org, org + new Vector2(width, height), Ui.Well, 4f);
             dl.AddRectFilledMultiColor(org, org + new Vector2(width, height * 0.5f), 0x18FFFFFF, 0x18FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
@@ -833,9 +514,9 @@ public static class SettingsPanel
             dl.AddText(org + new Vector2(8, 5), Ui.Faint, slot == 7 ? "Immune" : KindTabs[(int)kind]);
             b.Screen = new Vector2(MathF.Round(org.X + width * 0.5f), MathF.Round(org.Y + height * 0.66f));
             b.RestX = float.NaN; // re-snap to the panel's position (the panel can move between frames)
-            Renderer.Begin();
-            Renderer.Draw(b, now);
-            Renderer.Flush(dl);
+            renderer.Begin();
+            renderer.Draw(b, now);
+            renderer.Flush(dl);
         }
     }
 }

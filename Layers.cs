@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
+using ExileCore2.Shared.Attributes;
 using Newtonsoft.Json;
 
 namespace WhatsAHealthBar;
@@ -19,20 +20,40 @@ namespace WhatsAHealthBar;
 /// </summary>
 public sealed class StylePatch
 {
+    // [Menu] labels and tooltips are what the settings panel's list editor shows; every field is optional there too
+    // (a "set" box), so an unset field leaves the kind's look alone.
+
     /// <summary>True: the bar is not drawn at all.</summary>
+    [Menu("Hide the bar", "No bar at all while this applies")]
     public bool? Hide { get; set; }
+    [Menu("Life color")]
+    [MenuHexColor]
     public string? LifeColor { get; set; }
+    [Menu("ES color")]
+    [MenuHexColor]
     public string? EsColor { get; set; }
+    [Menu("Ward color")]
+    [MenuHexColor]
     public string? WardColor { get; set; }
+    [Menu("Background")]
+    [MenuHexColor]
     public string? BackgroundColor { get; set; }
+    [Menu("Outline")]
+    [MenuHexColor]
     public string? OutlineColor { get; set; }
     /// <summary>Color of the bar's name and data texts.</summary>
+    [Menu("Text color")]
+    [MenuHexColor]
     public string? TextColor { get; set; }
     /// <summary>Multiplies the whole bar's opacity (0-1).</summary>
+    [Menu("Opacity", "Multiplies the whole bar's opacity")]
+    [MenuRange(0, 1)]
     public float? Opacity { get; set; }
     /// <summary>Desaturates and darkens the pool fills.</summary>
+    [Menu("Grey", "Desaturates and darkens the fills")]
     public bool? Grey { get; set; }
     /// <summary>Dark stripes across the fill.</summary>
+    [Menu("Hatch", "Light diagonal stripes across the bar (the invulnerable look)")]
     public bool? Hatch { get; set; }
 
     [JsonIgnore]
@@ -131,29 +152,55 @@ public static class Badges
 public sealed class StatusRule
 {
     /// <summary>The buff definition id, as Buff.Name reads it in game (e.g. "ignited", "curse_vulnerability").</summary>
+    [Menu("Buff id", "The game's buff definition id, exactly as Buff.Name reads it")]
     public string Id { get; set; } = "";
+    [Menu("Label", "Your name for it (the panel and the bridge)")]
     public string Label { get; set; } = "";
+    [Menu("Enabled", "Shown as an icon when on")]
     public bool Enabled { get; set; } = true;
     /// <summary>Debuffs and buffs are separate icon blocks.</summary>
+    [Menu("Debuff", "On: in the debuff block; off: a buff. The two blocks have their own anchors (Status icons)")]
     public bool Debuff { get; set; } = true;
     /// <summary>A <see cref="StatusAtlas"/> icon name (StatusIcon enum).</summary>
+    [Menu("Icon", "One of the 96 atlas glyphs (syrairc's). Click to pick from the grid")]
     public string Icon { get; set; } = nameof(StatusIcon.Cursed);
+    [Menu("Tint", "The icon's color (the glyph is white in the atlas, so this is the color you see)")]
+    [MenuHexColor]
     public string Tint { get; set; } = "#FFFFFFFF";
+    [Menu("Badge", "Bare: the glyph alone. Gem: baked on the dark gem badge. Over badge: the glyph over a badge of its own color")]
+    [MenuChoices(Badges.Bare, Badges.Gem, Badges.OverBadge)]
     public string Badge { get; set; } = Badges.Bare;
+    [Menu("Badge tint", "Color of the badge under the glyph")]
+    [MenuHexColor]
+    [ConditionalDisplay(nameof(HasBadgeTint))]
     public string BadgeTint { get; set; } = "#FF2A2630";
+    [Menu("Scale", "Multiplies the icon size for this status alone (a big curse, a small chill)")]
+    [MenuRange(0.5, 3)]
     public float Scale { get; set; } = 1f;
     /// <summary>Changes the whole bar while the monster has this status (e.g. an orange outline while cursed).</summary>
+    [Menu("Bar while present", "Changes the whole bar while the monster has this status (an orange outline while cursed, hide while " +
+                               "shielded...). Set fields apply; the rest stay as the kind draws them")]
     public StylePatch? Patch { get; set; }
+
+    /// <summary>Panel only: the badge tint matters for the Over badge style.</summary>
+    [JsonIgnore]
+    public bool HasBadgeTint => Badge == Badges.OverBadge;
 }
 
 /// <summary>A look for specific monsters: regex on the metadata path (default) or the name, first match wins.</summary>
 public sealed class OverrideRule
 {
+    [Menu("Name", "Your name for it")]
     public string Name { get; set; } = "New override";
+    [Menu("Enabled", "Matched when on")]
     public bool Enabled { get; set; } = true;
     /// <summary>"Path" (metadata path, stable across languages and patches) or "Name" (display name; can be empty in PoE2).</summary>
+    [Menu("Match", "Path: the metadata path (stable across languages and patches). Name: the display name (can be empty in PoE2)")]
+    [MenuChoices("Path", "Name")]
     public string Match { get; set; } = "Path";
+    [Menu("Pattern", "A .NET regex, case-insensitive, e.g. Monsters/Rhoas/ or ^Xesht")]
     public string Pattern { get; set; } = "";
+    [Menu("Look while matched", "Set fields apply while the override matches; the rest stay as the kind draws them")]
     public StylePatch Patch { get; set; } = new();
 }
 
