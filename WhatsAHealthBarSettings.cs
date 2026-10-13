@@ -260,7 +260,7 @@ public sealed class StatusIconSettings
     public ListNode BuffAnchor { get; set; } = new() { Values = new(Anchors.All), Value = Anchors.Right };
 
     [Menu("Icon size (px)", "At 1440p; scales with the bars")]
-    public RangeNode<int> Size { get; set; } = new(18, 8, 64);
+    public RangeNode<int> Size { get; set; } = new(22, 8, 64);
 
     [Menu("Columns", "Icons per row before wrapping")]
     public RangeNode<int> Columns { get; set; } = new(6, 1, 12);

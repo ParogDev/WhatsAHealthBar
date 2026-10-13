@@ -743,13 +743,13 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         var dpsTau = Settings.Text.DpsWindow.Value;
         var look = _now >= _nextPreviewLook;
         if (look) _nextPreviewLook = _now + 0.1;
-        var y = _window.Y * 0.30f;
+        var y = _window.Y * 0.22f;
         for (var i = 0; i < _previewSims.Length; i++)
         {
             var sim = _previewSims[i];
             sim.Step(_now, _dt, _rng);
             var b = sim.Bar;
-            b.Screen = new Vector2(_window.X * 0.5f, y + i * 48 * _resolutionScale);
+            b.Screen = new Vector2(_window.X * 0.5f, y + i * 66 * _resolutionScale);
             if (look) PreviewLook(b);
             b.UpdateDps(_now, dpsTau);
             DotLoss(b, _now);
