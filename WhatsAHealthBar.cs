@@ -874,13 +874,14 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>A sample bar's look as classify would resolve it: fake statuses, a DoT on uniques and rares, the immune sample.</summary>
-    private void PreviewLook(Bar b) => PreviewLook(b, _now);
+    private void PreviewLook(Bar b) => PreviewLook(b, _now, _renderer);
 
     /// <param name="now">The clock the sample runs on: the plugin's for the in-game preview, ImGui's for the settings panel (which draws with the plugin disabled too).</param>
-    internal void PreviewLook(Bar b, double now)
+    /// <param name="r">The renderer the sample is drawn with (the panel has its own, prepared from the same settings).</param>
+    internal void PreviewLook(Bar b, double now, BarRenderer r)
     {
-        var L = _renderer.Rules;
-        var look = _renderer.BaseLook(b.Kind);
+        var L = r.Rules;
+        var look = r.BaseLook(b.Kind);
         var states = Settings.States;
         var oldCount = b.StatusCount;
         b.StatusCount = 0;
@@ -915,7 +916,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             }
             else b.DotRate = 0;
         }
-        b.ShowIcons = _renderer.IconsFor(b.Kind);
+        b.ShowIcons = r.IconsFor(b.Kind);
         var cullOn = states.Cullable.Value != StateModes.Off;
         var mul = states.CullMultiplier.Value;
         b.CullAt = !cullOn || b.Invulnerable ? 0 : Math.Min(1, b.Kind switch

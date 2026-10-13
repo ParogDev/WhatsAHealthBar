@@ -38,7 +38,7 @@ internal static class Ui
 
     // ---- [Menu] labels and tooltips, by node reference ----
 
-    private static readonly Dictionary<object, (string Label, string? Tip)> Menu = new(ReferenceEqualityComparer.Instance);
+    private static readonly Dictionary<object, (string Label, string? Tip, int Id)> Menu = new(ReferenceEqualityComparer.Instance);
     private static object? _menuRoot;
 
     /// <summary>Reads every [Menu] node's label and tooltip under <paramref name="root"/> (once; again if the settings object was replaced).</summary>
@@ -61,8 +61,9 @@ internal static class Ui
             try { v = p.GetValue(o); } catch { continue; }
             if (v == null) continue;
             if (v is ToggleNode or RangeNode<int> or RangeNode<float> or ColorNode or ListNode or TextNode or ButtonNode)
-                // A node without [Menu] (Enable) is labelled by its property name, so a row never shows a bare "?".
-                Menu[v] = (attr?.MenuName ?? p.Name, string.IsNullOrEmpty(attr?.Tooltip) ? null : attr!.Tooltip);
+                // A node without [Menu] (Enable) is labelled by its property name, so a row never shows a bare "?". The
+                // id is the node's place in the walk: unique, and the same every frame whatever else is drawn.
+                Menu[v] = (attr?.MenuName ?? p.Name, string.IsNullOrEmpty(attr?.Tooltip) ? null : attr!.Tooltip, Menu.Count + 1);
             else if (p.PropertyType.IsClass && p.PropertyType.Namespace == typeof(Ui).Namespace) Walk(v, depth + 1);
         }
     }
@@ -70,6 +71,9 @@ internal static class Ui
     /// <summary>The node's [Menu] label (its property name without one); a node the index never reached says so.</summary>
     public static string Label(object node) => Menu.TryGetValue(node, out var m) ? m.Label : "(node not under the settings root)";
     public static string? TipOf(object node) => Menu.TryGetValue(node, out var m) ? m.Tip : null;
+
+    /// <summary>Pushes the node's ImGui id (its index in the settings walk; 0 for a node the walk never reached).</summary>
+    public static void PushNodeId(object node) => ImGui.PushID(Menu.TryGetValue(node, out var m) ? m.Id : 0);
 
     // ---- Style ----
 
@@ -91,7 +95,6 @@ internal static class Ui
     {
         var avail = ImGui.GetContentRegionAvail().X;
         ControlW = Math.Clamp(avail - LabelW - 24, 150f, 320f);
-        _rowId = 0;
         for (var i = 0; i < StyleColors.Length; i++) ImGui.PushStyleColor(StyleColors[i].Col, StyleColors[i].Value);
         ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
         ImGui.PushStyleVar(ImGuiStyleVar.GrabRounding, 4f);
@@ -167,18 +170,12 @@ internal static class Ui
 
     // ---- Node rows ----
 
-    // ImGui ids for the node rows: a counter restarted by PushStyle each frame, so the same row keeps the same id from
-    // frame to frame (a drag stays on its slider) and no two rows share one (object.GetHashCode is not unique).
-    private static int _rowId;
-
-    public static void PushRowId() => ImGui.PushID(_rowId++);
-
     /// <summary>A toggle row: the pill, then the label; the node's tooltip on both.</summary>
     public static bool Toggle(ToggleNode node, string? label = null)
     {
         var tip = TipOf(node);
         var v = node.Value;
-        PushRowId();
+        PushNodeId(node);
         Anim.TryGetValue(node, out var a);
         var changed = Pill("##p", ref v, ref a);
         Anim[node] = a;
@@ -220,7 +217,7 @@ internal static class Ui
     {
         RowLabel(label ?? Label(node), TipOf(node));
         var v = node.Value;
-        PushRowId();
+        PushNodeId(node);
         var changed = ImGui.SliderInt("##s", ref v, node.Min, node.Max);
         ImGui.PopID();
         Tip(TipOf(node));
@@ -232,7 +229,7 @@ internal static class Ui
     {
         RowLabel(label ?? Label(node), TipOf(node));
         var v = node.Value;
-        PushRowId();
+        PushNodeId(node);
         var changed = ImGui.SliderFloat("##s", ref v, node.Min, node.Max, fmt);
         ImGui.PopID();
         Tip(TipOf(node));
@@ -245,7 +242,7 @@ internal static class Ui
     {
         RowLabel(label ?? Label(node), TipOf(node));
         var v = ToV(node.Value);
-        PushRowId();
+        PushNodeId(node);
         var changed = ImGui.ColorEdit4("##c", ref v, ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.AlphaBar | ImGuiColorEditFlags.AlphaPreviewHalf);
         ImGui.PopID();
         Tip(TipOf(node));
@@ -267,7 +264,7 @@ internal static class Ui
     public static bool Segmented(ListNode node, string? label = null)
     {
         RowLabel(label ?? Label(node), TipOf(node));
-        PushRowId();
+        PushNodeId(node);
         var changed = SegmentedButtons(node.Values, node.Value, out var picked);
         ImGui.PopID();
         if (changed) node.Value = picked;

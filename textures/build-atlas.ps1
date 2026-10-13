@@ -3,8 +3,7 @@
 # $Cell px with high-quality bicubic filtering: the HUD loads textures without mipmaps, so a 256 px cell drawn at 20 px
 # would shimmer. One atlas = one texture = one extra draw command for every icon on screen.
 # Layout (StatusAtlas.cs must match): gem-badged icons at x 0, bare icons at x 8*Cell, the plain badge at x 16*Cell y 0,
-# two tiling hatch patterns (white diagonal stripes, period 8 then 4 px) at x 16*Cell, y 2*Cell and 3*Cell, and a solid
-# white block at y 4*Cell. The bare
+# and a solid white block at x 16*Cell, y 2*Cell. The bare
 # glyphs are brightened (their body is a 56-100% grey gradient in the source, which made every tint look dim): body to
 # white, the dark edge kept, so a tint draws at its own color.
 # Windows PowerShell 5.1: powershell -NoProfile -ExecutionPolicy Bypass -File textures\build-atlas.ps1
@@ -50,30 +49,11 @@ $badge = [System.Drawing.Image]::FromFile((Join-Path $dir 'source\Icons_Status_B
 Put $badge 0 0 $badge.Width $badge.Height (2 * $cols * $Cell) 0 $attr
 $badge.Dispose()
 
-# Hatch cells: 45-degree white stripes that tile seamlessly (the cell is a multiple of the period). Drawn on their own bitmap
-# so the clipping is exact, then copied in. Row 1 under the badge stays empty as filter padding.
-function Hatch($period, $width, $dy) {
-    # ($bmp, not $cell: PowerShell variable names are case-insensitive and $Cell is the size)
-    $bmp = New-Object System.Drawing.Bitmap $Cell, $Cell, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $cg = [System.Drawing.Graphics]::FromImage($bmp)
-    $cg.Clear([System.Drawing.Color]::Transparent)
-    $cg.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $pen = New-Object System.Drawing.Pen ([System.Drawing.Color]::White), $width
-    for ($k = -$Cell; $k -le 2 * $Cell; $k += $period) {
-        # the line x - y = k, from the top edge to the bottom edge, extended past the cell so the ends are clipped
-        $cg.DrawLine($pen, [single]($k - $Cell), [single](-$Cell), [single]($k + 2 * $Cell), [single](2 * $Cell))
-    }
-    $pen.Dispose(); $cg.Dispose()
-    $g.DrawImage($bmp, (New-Object System.Drawing.Rectangle (2 * $cols * $Cell), $dy, $Cell, $Cell), 0, 0, $Cell, $Cell, [System.Drawing.GraphicsUnit]::Pixel)
-    $bmp.Dispose()
-}
-Hatch 8 2.2 (2 * $Cell)
-Hatch 4 1.3 (3 * $Cell)
-
-# A solid white block (16 px, centred in the cell at row 4): the renderer samples its middle for overlays that must draw
-# over the icons (the stacks pill, the damage-over-time edge) while staying in the icons' one draw command.
+# A solid white block (16 px, centred in the cell at row 2; row 1 under the badge stays empty as filter padding): the
+# renderer samples its middle for overlays that must draw over the icons (the stacks pill) while staying in the icons'
+# one draw command.
 $white = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
-$g.FillRectangle($white, (2 * $cols * $Cell) + 24, (4 * $Cell) + 24, 16, 16)
+$g.FillRectangle($white, (2 * $cols * $Cell) + 24, (2 * $Cell) + 24, 16, 16)
 $white.Dispose()
 
 $g.Dispose()

@@ -40,13 +40,19 @@ public static class SettingsPanel
     private static readonly Dictionary<string, string?> RegexErrors = new();
     private static readonly SampleBars Samples = new();
     private static readonly LiveText Live = new();
+    /// <summary>The panel's own batch renderer for the sample bars (the plugin's draws the overlay and keeps its counters).</summary>
+    private static readonly BarRenderer Renderer = new();
 
     public static void Draw(WhatsAHealthBar plugin, WhatsAHealthBarSettings s)
     {
         Ui.Index(s);
-        // The HUD skips a disabled plugin's Tick and Render, so the panel runs on ImGui's clock and prepares the renderer
-        // itself: the samples animate and edits show whether the plugin is on or off.
-        plugin.Renderer.Prepare(s, plugin.ResolutionScale);
+        // The HUD skips a disabled plugin's Tick and Render, so the panel runs on ImGui's clock and has a renderer of its
+        // own (same rules and atlas, prepared from the same settings): the samples animate and edits show whether the
+        // plugin is on or off, and the overlay's counters and caches are never touched.
+        Renderer.Rules = plugin.Rules;
+        Renderer.AtlasId = plugin.Renderer.AtlasId;
+        Renderer.SubPixel = false;
+        Renderer.Prepare(s, plugin.ResolutionScale);
         Ui.PushStyle();
         var style = ImGui.GetStyle();
         TrailingW = ImGui.CalcTextSize("debuff").X + 10 + 2 * ImGui.GetFrameHeight() + ImGui.CalcTextSize("x").X + 2 * style.FramePadding.X + 4 * style.ItemSpacing.X + 8;
@@ -220,7 +226,7 @@ public static class SettingsPanel
     /// <summary>One text slot: the input, the token chips (click to append) and the string the sample bar shows right now.</summary>
     private static void Template(TextNode node, string label, Bar sample, bool chips)
     {
-        Ui.PushRowId();
+        Ui.PushNodeId(node);
         Ui.RowLabel(label, Ui.TipOf(node));
         ImGui.SetNextItemWidth(-1);
         var v = node.Value ?? "";
@@ -274,7 +280,7 @@ public static class SettingsPanel
             {
                 var d = _searchHits[i];
                 ImGui.PushID(i);
-                // Against the list itself, not the compiled rules: those are rebuilt by Tick, which a disabled plugin doesn't get.
+                // Against the list itself: a disabled entry is listed too, and the compiled rules skip those.
                 var listed = false;
                 for (var j = 0; j < s.Statuses.Count && !listed; j++) listed = s.Statuses[j].Id == d.Id;
                 if (listed) { Ui.Badge("listed", Ui.Faint); }
@@ -298,6 +304,7 @@ public static class SettingsPanel
         Ui.Section("Statuses shown as icons");
         Ui.Note("Order is draw order. Click a row to edit it; the icon on the left is drawn as it will be on the bar.");
         var atlas = plugin.Renderer.AtlasId;
+        var L = plugin.Rules;
         for (var i = 0; i < s.Statuses.Count; i++)
         {
             var r = s.Statuses[i];
@@ -306,9 +313,17 @@ public static class SettingsPanel
             Ui.BeginCard("##st", open);
             var en = r.Enabled;
             if (EnableBox(ref en, "Shown as an icon when on")) { r.Enabled = en; changed = true; }
-            var icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
-            var tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
-            var badgeTint = Colors.TryParse(r.BadgeTint, out var bt) ? bt : 0xFF30262A;
+            // The compiled rule (icon index, parsed tints) when it compiled: the rules are rebuilt on every edit here. A
+            // disabled or duplicate status has none and is parsed on the spot.
+            int icon; uint tint, badgeTint;
+            if (L.StatusById.TryGetValue(r.Id, out var rule) && ReferenceEquals(L.Statuses[rule], r))
+            { icon = L.StatusIcons[rule]; tint = L.StatusTints[rule]; badgeTint = L.StatusBadgeTints[rule]; }
+            else
+            {
+                icon = Math.Max(0, Array.IndexOf(StatusAtlas.Names, r.Icon));
+                tint = Colors.TryParse(r.Tint, out var tc) ? tc : 0xFFFFFFFF;
+                badgeTint = Colors.TryParse(r.BadgeTint, out var bt) ? bt : 0xFF30262A;
+            }
             Ui.IconImage(atlas, icon, r.Badge, en ? tint : Ui.Alpha(tint, 0.35f), en ? badgeTint : Ui.Alpha(badgeTint, 0.35f), 20, s.Icons.Plate);
             ImGui.SameLine();
             var action = CardRow(r.Label.Length > 0 ? r.Label : r.Id, r.Id, r.Debuff ? "debuff" : "buff", r.Debuff ? 0xFF4A4AC8 : 0xFF3C9A64, open, i == 0, i == s.Statuses.Count - 1);
@@ -791,7 +806,7 @@ public static class SettingsPanel
                 var dt = _stepped[slot] > 0 ? (float)Math.Clamp(now - _stepped[slot], 0, 0.1) : 0f;
                 _stepped[slot] = now;
                 sim.Step(now, dt, plugin.Rng);
-                if (now - _looked[slot] >= 0.1) { _looked[slot] = now; plugin.PreviewLook(b, now); }
+                if (now - _looked[slot] >= 0.1) { _looked[slot] = now; plugin.PreviewLook(b, now, Renderer); }
                 b.UpdateDps(now, plugin.Settings.Text.DpsWindow.Value);
                 WhatsAHealthBar.DotLoss(b, now);
                 b.Animate(now, dt, plugin.AnimNow());
@@ -804,14 +819,12 @@ public static class SettingsPanel
             dl.AddRectFilled(org, org + new Vector2(width, height), Ui.Well, 4f);
             dl.AddRectFilledMultiColor(org, org + new Vector2(width, height * 0.5f), 0x18FFFFFF, 0x18FFFFFF, 0x00FFFFFF, 0x00FFFFFF);
             dl.AddRect(org, org + new Vector2(width, height), Ui.CardBorder, 4f);
-            var label = BarRenderer.KindNames[(int)kind];
-            dl.AddText(org + new Vector2(8, 5), Ui.Faint, slot == 7 ? "Immune" : label);
+            dl.AddText(org + new Vector2(8, 5), Ui.Faint, slot == 7 ? "Immune" : KindTabs[(int)kind]);
             b.Screen = new Vector2(MathF.Round(org.X + width * 0.5f), MathF.Round(org.Y + height * 0.66f));
             b.RestX = float.NaN; // re-snap to the panel's position (the panel can move between frames)
-            var r = plugin.Renderer;
-            r.Begin();
-            r.Draw(b, now);
-            r.Flush(dl, record: false);
+            Renderer.Begin();
+            Renderer.Draw(b, now);
+            Renderer.Flush(dl);
         }
     }
 }

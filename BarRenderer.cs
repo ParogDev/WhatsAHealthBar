@@ -104,9 +104,10 @@ public sealed class BarRenderer
     }
 
     private IconQuad[] _iconQuads = new IconQuad[256];
-    private int _iconCount;
+    /// <summary>Atlas quads this frame (icons, badges, plus the overlays drawn through the atlas), and the icons among them.</summary>
+    private int _iconCount, _iconsDrawn;
 
-    /// <summary>Icons written by the last Flush.</summary>
+    /// <summary>Status icons drawn by the last Flush (the overlays that share their draw command are not counted).</summary>
     public int LastIcons { get; private set; }
 
     /// <summary>Reads the settings into flat colors and sizes, once per frame.</summary>
@@ -211,6 +212,7 @@ public sealed class BarRenderer
         _quadCount = 0;
         _textCount = 0;
         _iconCount = 0;
+        _iconsDrawn = 0;
         _fontSize = ImGui.GetFontSize();
     }
 
@@ -357,8 +359,9 @@ public sealed class BarRenderer
             if (b.Veil[Bar.Life] > 0.002f) spillMax = Spill(spillX, y0, y1, w, life, a, b.Veil[Bar.Life]);
         }
 
-        // Damage over time still to come: a dark, finely hatched chunk at the life fill's end, as wide as the predicted loss,
-        // with a light edge where the fill will end up ("this much is already gone").
+        // Damage over time still to come: a dark chunk at the life fill's end, as wide as the predicted loss, with a light
+        // edge where the fill will end up ("this much is already gone"). Two quads in this bar's own draw order (anything
+        // drawn with the icons would go out after every bar's quads and mark a nearer bar overlapping this one).
         if (_dot && b.DotLossShown > 0 && !float.IsNaN(_lifeFill) && b.Max[Bar.Life] > 0)
         {
             var lw = _lifeRW * MathF.Min(1, b.DotLossShown / b.Max[Bar.Life]);
@@ -366,15 +369,12 @@ public sealed class BarRenderer
             if (_lifeFill - cx0 >= 1)
             {
                 Rect(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(_dotColor, a));
-                Hatch(cx0, _lifeY0, _lifeFill, _lifeY1, Mul(0xFFFFFFFF, a * 0.16f), StatusAtlas.HatchFine, true);
-                if (cx0 > _lifeRX0 + 1) Over(cx0, _lifeY0, cx0 + 1, _lifeY1, Mul(Lerp(life, 0xFFFFFFFF, 0.6f), a * 0.9f));
+                if (cx0 > _lifeRX0 + 1) Rect(cx0, _lifeY0, cx0 + 1, _lifeY1, Mul(Lerp(life, 0xFFFFFFFF, 0.6f), a * 0.9f));
             }
         }
         // Invulnerable (or a patch asking for it): light diagonal stripes across the whole bar, a shield rather than a
-        // wound. As quads, in this bar's own place in the draw order: textured stripes would go out after every bar's
-        // quads and stripe a nearer bar overlapping this one, telling the player that monster is immune. One boss at a
-        // time pays the ~220 quads.
-        if (look.Hatch) Hatch(x0, y0, x1, y1, Mul(0xFFFFFFFF, a * 0.2f), StatusAtlas.HatchCoarse, false);
+        // wound; quads, for the same draw-order reason (one boss at a time pays the ~220).
+        if (look.Hatch) Hatch(x0, y0, x1, y1, Mul(0xFFFFFFFF, a * 0.2f), 8);
 
         // Shading and gloss over the whole bar (a glass tube): dark from mid to bottom, white from top to mid.
         var inset = r > 0 ? 1 : 0;
@@ -546,6 +546,7 @@ public sealed class BarRenderer
             var icon = L.StatusIcons[rule];
             var tintFull = L.StatusTints[rule];
             var tint = Mul(tintFull, a);
+            _iconsDrawn++;
             if (_iconPlate)
             {
                 // The plate: a dark rounded slab under the icon (so a bright glyph reads on sky, snow or fire) with a thin
@@ -631,33 +632,13 @@ public sealed class BarRenderer
         return a;
     }
 
-    /// <summary>
-    /// Diagonal stripes across a rectangle. <paramref name="textured"/>: windows into the atlas's tiling hatch cell, one
-    /// quad per 64 px, drawn 1:1 so the stripes stay crisp and seamless, but drawn with the icons after every bar's quads
-    /// (right for the small damage-over-time chunk). Otherwise, or without the atlas, 2 px steps as quads in this bar's
-    /// own place in the draw order (a 150 x 16 bar is ~220 of them; the textured path is 3).
-    /// </summary>
-    private void Hatch(float x0, float y0, float x1, float y1, uint col, int pattern, bool textured)
+    /// <summary>Diagonal stripes (2 px steps, <paramref name="period"/> px apart) across a rectangle, as quads in the bar's own draw order.</summary>
+    private void Hatch(float x0, float y0, float x1, float y1, uint col, int period)
     {
         var h = y1 - y0;
         // Not in a sub-pixel blend copy: the translucent stripes would stack with the base copy's (the same reason the
         // copies keep opaque quads only).
         if (h < 2 || x1 - x0 < 1 || _opaqueOnly) return;
-        if (textured && AtlasId != IntPtr.Zero)
-        {
-            for (var y = y0; y < y1; y += StatusAtlas.Cell)
-            {
-                var ch = MathF.Min(y1 - y, StatusAtlas.Cell);
-                for (var x = x0; x < x1; x += StatusAtlas.Cell)
-                {
-                    var cw = MathF.Min(x1 - x, StatusAtlas.Cell);
-                    StatusAtlas.HatchUv(pattern, cw, ch, out var u0, out var v0, out var u1, out var v1);
-                    Icon(x, y, x + cw, y + ch, u0, v0, u1, v1, col);
-                }
-            }
-            return;
-        }
-        var period = pattern == StatusAtlas.HatchFine ? 4 : 8;
         for (var sx = x0 - h; sx < x1; sx += period)
             for (var k = 0; k < h; k += 2)
             {
@@ -821,19 +802,19 @@ public sealed class BarRenderer
     /// _OwnerName, _VtxWritePtr, _IdxWritePtr) and checked against the public view before every write; if an ImGui update
     /// moved them, the quads go through AddRectFilledMultiColor instead and <see cref="Path"/> says why.
     /// </summary>
-    /// <param name="record">False for a batch outside the frame's own (the settings panel's sample bars): the state's
-    /// quad and icon counters keep the frame's numbers.</param>
-    public void Flush(ImDrawListPtr dl, bool record = true)
+    public void Flush(ImDrawListPtr dl)
     {
         var icons = AtlasId != IntPtr.Zero ? _iconCount : 0;
-        if (record) { LastQuads = _quadCount; LastIcons = icons; }
+        LastQuads = _quadCount;
+        LastIcons = AtlasId != IntPtr.Zero ? _iconsDrawn : 0;
         if (_quadCount > 0 || icons > 0)
         {
             var why = CheckLayout(dl, _quadCount + icons);
-            if (why != null) Fallback(dl, why, record);
+            if (why != null) Fallback(dl, why);
             else
             {
-                if (record) { Path = "batched"; _fallbackWhy = null; }
+                Path = "batched";
+                _fallbackWhy = null;
                 var uv = ImGui.GetIO().Fonts.TexUvWhitePixel;
                 int u = BitConverter.SingleToInt32Bits(uv.X), v = BitConverter.SingleToInt32Bits(uv.Y);
                 for (var done = 0; done < _quadCount;)
@@ -933,8 +914,8 @@ public sealed class BarRenderer
         // A draw list nothing has written into yet this frame (we are the first on the background list): ImGui's
         // _ResetForNewFrame nulls the write pointers while the buffers keep their capacity (Data stays), so they only
         // line up after the first PrimReserve, which is ours. Seen live 2026-10-13: every bar went through the fallback.
-        if (vb.Size == 0 && vtxWrite == IntPtr.Zero) return null;
-        if (vtxWrite != vb.Data + vb.Size * VertBytes)
+        var fresh = vb.Size == 0 && vtxWrite == IntPtr.Zero;
+        if (!fresh && vtxWrite != vb.Data + vb.Size * VertBytes)
         {
             var at = (long)vtxWrite - (long)vb.Data;
             if (at != _badVtxAt || vb.Size != _badVtxSize || _badVtxWhy == null)
@@ -958,9 +939,9 @@ public sealed class BarRenderer
         i += VertInts;
     }
 
-    private void Fallback(ImDrawListPtr dl, string why, bool record)
+    private void Fallback(ImDrawListPtr dl, string why)
     {
-        if (record && !ReferenceEquals(_fallbackWhy, why)) { _fallbackWhy = why; Path = "fallback: " + why; }
+        if (!ReferenceEquals(_fallbackWhy, why)) { _fallbackWhy = why; Path = "fallback: " + why; }
         for (var i = 0; i < _quadCount; i++)
         {
             ref var q = ref _quads[i];
