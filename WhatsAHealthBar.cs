@@ -76,12 +76,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         _mainThread = Environment.CurrentManagedThreadId; // until the first Tick says which thread is the main one
         // The Preview ButtonNode is for the control center (it presses nodes by reflection); the panel has its own button.
         Settings.Preview.OnPressed += () => StartPreview(8, null);
-        GameController.PluginBridge.SaveMethod(GetStateName, (Func<string>)GetStateJson);
-        GameController.PluginBridge.SaveMethod(PreviewName, (Func<string, string>)PreviewFromBridge);
-        GameController.PluginBridge.SaveMethod(GetLayersName, (Func<string>)GetLayersJson);
-        GameController.PluginBridge.SaveMethod(SetLayersName, (Func<string, string>)SetLayersFromBridge);
-        GameController.PluginBridge.SaveMethod(SearchBuffsName, (Func<string, string>)SearchBuffsFromBridge);
-        GameController.PluginBridge.SaveMethod(WhyName, (Func<string, string>)WhyFromBridge);
+        BridgeExports.Register(this, GameController.PluginBridge); // the [BridgeExport] methods below
         Migrate();
         CompileLayers(); // now, not on the first Tick: a plugin disabled at start still shows its settings panel
         LoadAtlas();
@@ -841,6 +836,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>PluginBridge WhatsAHealthBar.Preview (any thread): queued for Tick.</summary>
+    [BridgeExport(PreviewName)]
     private string PreviewFromBridge(string arg)
     {
         double seconds = 8; string? focus = null; var stress = 0;
@@ -991,6 +987,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     private static readonly JsonSerializerSettings Json = new() { NullValueHandling = NullValueHandling.Ignore };
 
     /// <summary>WhatsAHealthBar.GetLayers: the status, override and ignore lists, the icon names, and what didn't compile.</summary>
+    [BridgeExport(GetLayersName)]
     private string GetLayersJson()
     {
         lock (LayersLock)
@@ -1006,6 +1003,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>WhatsAHealthBar.SetLayers(json): replaces each list given (null or missing: unchanged), applied on the next Tick.</summary>
+    [BridgeExport(SetLayersName)]
     private string SetLayersFromBridge(string arg)
     {
         LayersDto? dto;
@@ -1049,6 +1047,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     }
 
     /// <summary>WhatsAHealthBar.SearchBuffs(query): up to 60 buff definitions whose id or name contains the query.</summary>
+    [BridgeExport(SearchBuffsName)]
     private string SearchBuffsFromBridge(string query) => OnMain(() =>
     {
         var all = BuffCatalog();
@@ -1064,6 +1063,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     /// WhatsAHealthBar.WhyNotDrawn(arg): per tracked entity, whether its bar is drawn and the first reason it isn't.
     /// arg: empty (the 40 nearest), an entity id, or text matched against the path and name.
     /// </summary>
+    [BridgeExport(WhyName)]
     private string WhyFromBridge(string arg) => OnMain(() =>
     {
         var reply = new WhyReplyDto { Suppressed = _suppressed, MaxDistance = Settings.Visibility.MaxDistance.Value, Tracked = _bars.Count };
@@ -1103,6 +1103,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
         return dto;
     }
 
+    [BridgeExport(GetStateName)]
     private string GetStateJson()
     {
         var previewing = Previewing;
