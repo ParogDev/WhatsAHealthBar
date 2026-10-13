@@ -104,8 +104,15 @@ public sealed class TextTemplate
         _ => 0,
     };
 
-    /// <summary>What <see cref="Abbrev"/> can show (exact under 10k, then 0.1k / 0.1m steps), so a tiny drift doesn't rebuild the string.</summary>
-    private static long Shown(float v) => v < 10_000 ? (long)v : v < 1_000_000 ? (long)(v / 100) * 100 : (long)(v / 100_000) * 100_000;
+    /// <summary>Exactly the steps <see cref="Abbrev"/> prints (whole units under 10k, 0.1k under 100k, whole k under 1m, then 0.1m / whole m), so a drift the text can't show doesn't rebuild it.</summary>
+    private static long Shown(float v)
+    {
+        if (v < 0) v = 0;
+        if (v < 10_000) return (long)v;
+        if (v < 1_000_000) { var k = v / 1000f; return k >= 100 ? (long)k * 1000 : (long)MathF.Round(k * 10) * 100; }
+        var m = v / 1_000_000f;
+        return m >= 100 ? (long)m * 1_000_000 : (long)MathF.Round(m * 10) * 100_000;
+    }
 
     public string Build(Bar b)
     {

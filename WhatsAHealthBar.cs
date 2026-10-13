@@ -73,7 +73,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     public override bool Initialise()
     {
         Name = "Whats A Health Bar";
-        _mainThread = -1;
+        _mainThread = Environment.CurrentManagedThreadId; // until the first Tick says which thread is the main one
         Settings.Preview.OnPressed += () => StartPreview(8, null);
         GameController.PluginBridge.SaveMethod(GetStateName, (Func<string>)GetStateJson);
         GameController.PluginBridge.SaveMethod(PreviewName, (Func<string, string>)PreviewFromBridge);
@@ -275,6 +275,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             cull[(int)BarKind.Normal] = Math.Min(1, states.CullNormal.Value / 100f * mul);
         }
         _wanted = _withStatuses = _invulnerable = _withDot = 0;
+        var staleAfter = 3.5 / Math.Max(1, Settings.Visibility.ClassifyHz.Value); // a little over one stagger stride
         _classifyPass++;
 
         foreach (var b in _bars)
@@ -347,10 +348,13 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             var look = _renderer.BaseLook(b.Kind);
             if (L.Overrides.Length > 0)
             {
-                if (b.OverrideVersion != _layersVersion)
+                // Matched once per rules version; a name override is matched again while the name wasn't readable yet.
+                if (b.OverrideVersion != _layersVersion || (nameOverrides && b.OverrideNameEmpty))
                 {
-                    b.OverrideIndex = L.MatchOverride(b.PathKey, nameOverrides ? e.RenderName ?? "" : "");
+                    var name = nameOverrides ? e.RenderName ?? "" : "";
+                    b.OverrideIndex = L.MatchOverride(b.PathKey, name);
                     b.OverrideVersion = _layersVersion;
+                    b.OverrideNameEmpty = nameOverrides && name.Length == 0;
                 }
                 if (b.OverrideIndex >= 0) L.OverridePatches[b.OverrideIndex]?.ApplyTo(ref look);
                 if (look.Hide) { b.Why = Why.OverrideHidden; continue; }
@@ -374,10 +378,12 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
 
             // Stats and buffs (invulnerable, can't be culled, damage over time, statuses): hostile monsters only (a player's
             // stat dictionary is ~110 entries, ~20 us to read), uniques and rares every pass, magic and normal monsters every
-            // third pass, staggered by id (~3 Hz each; a running DoT's chunk keeps shrinking in between). Between reads the
-            // last values stand.
+            // third pass, staggered by id (~3 Hz each; a running DoT's chunk keeps shrinking in between); other bars' buffs (icons
+            // on Everything) at the same third. Between reads the last values stand; a read older than about one stride (the bar
+            // was out of range) or against older rules is redone at once. DoT and states are for monsters: yours and allies' are not read.
             var hostile = b.Kind <= BarKind.Normal;
-            var fresh = hostile && (b.Kind <= BarKind.Rare || (_classifyPass + b.Id) % 3 == 0 || b.LayersReadAt < 0);
+            var fresh = (hostile && b.Kind <= BarKind.Rare) || (_classifyPass + b.Id) % 3 == 0 || _now - b.LayersReadAt > staleAfter
+                        || b.StatusVersion != _layersVersion;
             if (!hostile)
             {
                 b.Invulnerable = b.CannotBeCulled = false;
@@ -385,9 +391,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             }
             var dotPerMin = -1; // -1: not read this pass
             var dotThroughEs = false;
-            if (fresh)
+            if (fresh && hostile)
             {
-                b.LayersReadAt = _now;
                 b.Invulnerable = b.CannotBeCulled = false;
                 dotPerMin = 0;
                 if (invulnOn || cullOn || dotOn)
@@ -417,8 +422,10 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             var icons = _renderer.IconsFor(b.Kind) && (b.Kind != BarKind.Minion || Settings.Icons.Kinds.Value == IconKinds.All);
             var horizon = 0f;
             var wantBuffs = (icons && L.StatusById.Count > 0) || L.AnyStatusPatch;
-            if (fresh || (!hostile && wantBuffs))
+            if (fresh)
             {
+                b.LayersReadAt = _now;
+                b.StatusVersion = _layersVersion;
                 b.StatusCount = 0;
                 if (wantBuffs || dotPerMin > 0)
                 {
@@ -445,7 +452,8 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             if (dotPerMin > 0)
             {
                 b.DotRate = dotPerMin / 60f;
-                b.DotUntil = _now + (horizon > 0 ? horizon : Settings.Dot.FallbackSeconds.Value);
+                // At least until the next read of a staggered bar, so a steady DoT doesn't blink off between reads.
+                b.DotUntil = _now + Math.Max(horizon > 0 ? horizon : Settings.Dot.FallbackSeconds.Value, b.Kind <= BarKind.Rare ? 0 : (float)staleAfter);
                 b.DotThroughEs = dotThroughEs;
             }
             else if (dotPerMin == 0 || !dotOn) b.DotRate = 0;
@@ -919,7 +927,7 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
             {
                 if (dto.Statuses != null) Settings.Statuses = dto.Statuses.Where(s => s != null).ToList();
                 if (dto.Overrides != null) Settings.Overrides = dto.Overrides.Where(o => o != null).ToList();
-                if (dto.IgnoredPaths != null) Settings.IgnoredPaths = dto.IgnoredPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).Distinct().ToList();
+                if (dto.IgnoredPaths != null) Settings.IgnoredPaths = dto.IgnoredPaths;
                 CompiledLayers.Normalize(Settings);
             }
             CompileLayers();

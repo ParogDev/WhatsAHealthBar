@@ -111,7 +111,11 @@ public sealed class Bar
     /// <summary>The kind shows icons (else the statuses were read for their patches only).</summary>
     public bool ShowIcons;
     /// <summary>When stats and buffs were last read (staggered for magic and normal monsters); -1: never.</summary>
-    public double LayersReadAt = -1;
+    public double LayersReadAt = double.NegativeInfinity;
+    /// <summary>The compiled rules version the statuses were read against (Rule indices are only valid for it).</summary>
+    public int StatusVersion = -1;
+    /// <summary>A name override was matched while the name was still empty: match again.</summary>
+    public bool OverrideNameEmpty;
 
     /// <summary>Damage over time: pool loss per second and when the longest running DoT ends (per frame: <see cref="DotLossShown"/>).</summary>
     public float DotRate, DotLossShown;

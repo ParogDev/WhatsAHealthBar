@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 
@@ -226,7 +227,9 @@ public sealed class CompiledLayers
         s.IgnoredPaths ??= new List<string>();
         s.Statuses.RemoveAll(r => r == null);
         s.Overrides.RemoveAll(o => o == null);
-        s.IgnoredPaths.RemoveAll(string.IsNullOrWhiteSpace);
+        var ignored = s.IgnoredPaths.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        s.IgnoredPaths.Clear();
+        s.IgnoredPaths.AddRange(ignored);
         foreach (var r in s.Statuses)
         {
             r.Id ??= ""; r.Label ??= ""; r.Icon ??= nameof(StatusIcon.Cursed); r.Tint ??= "#FFFFFFFF";

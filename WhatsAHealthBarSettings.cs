@@ -325,8 +325,8 @@ public sealed class StateSettings
 [Submenu(CollapsedByDefault = true)]
 public sealed class DotSettings
 {
-    [Menu("Show predicted loss", "A dark hatched chunk at the end of the life fill: what the damage over time running now will still " +
-                                 "take (rate x time left on the longest ailment)")]
+    [Menu("Show predicted loss", "On monsters: a dark hatched chunk at the end of the life fill, what the damage over time running now " +
+                                 "will still take (rate x time left on the longest ailment)")]
     public ToggleNode Enabled { get; set; } = new(true);
 
     [Menu("Chunk color")]
