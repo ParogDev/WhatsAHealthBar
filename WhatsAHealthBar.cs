@@ -102,13 +102,18 @@ public sealed class WhatsAHealthBar : BaseSettingsPlugin<WhatsAHealthBarSettings
     /// <summary>Loads the status icon atlas (syrairc's glyphs, composed by textures/build-atlas.ps1) as one ImGui texture.</summary>
     private void LoadAtlas()
     {
+        // The HUD compiles source plugins into Plugins\Temp\<folder> (DirectoryFullName), so the texture is read from the
+        // source folder next to it (Plugins\Source\<folder>); a DLL built with MSBuild has it copied next to it.
+        var folder = Path.GetFileName(DirectoryFullName.TrimEnd('\\', '/'));
+        var plugins = Path.GetDirectoryName(Path.GetDirectoryName(DirectoryFullName.TrimEnd('\\', '/'))) ?? "";
         var candidates = new[]
         {
             Path.Combine(DirectoryFullName, StatusAtlas.File),
+            Path.Combine(plugins, "Source", folder, StatusAtlas.File),
             Path.Combine(Path.GetDirectoryName(GetType().Assembly.Location) ?? "", StatusAtlas.File),
         };
         var path = candidates.FirstOrDefault(File.Exists);
-        if (path == null) { _atlasProblem = $"{StatusAtlas.File} not found in {DirectoryFullName} or next to the plugin DLL: no status icons"; return; }
+        if (path == null) { _atlasProblem = $"{StatusAtlas.File} not found in any of: {string.Join(" | ", candidates)}: no status icons"; return; }
         try
         {
             if (!Graphics.InitImage(StatusAtlas.TextureName, path)) { _atlasProblem = $"Graphics.InitImage refused {path}: no status icons"; return; }
